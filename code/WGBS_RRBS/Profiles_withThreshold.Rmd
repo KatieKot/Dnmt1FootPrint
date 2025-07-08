@@ -1,0 +1,460 @@
+```{r}
+library(pacman)
+p_load(data.table, dplyr, ggplot2, rtracklayer, RColorBrewer, scales, foreach, GenomicRanges, clusterProfiler,
+viridis, annotatr, stringr, GGally, EnrichedHeatmap, circlize, corrplot, patchwork, splines, org.Mm.eg.db)
+options(scipen=999)
+knitr::opts_chunk$set(fig.width=9, fig.height=7)
+dir.create(outdatadir, recursive=TRUE)
+source("./code/common.R")
+```
+
+# Profiles {.tabset}  
+
+Elements overlapping blacklisted regions not used. Only those elements that have at least 5 CpG.   
+
+```{r}
+samples2do_BS <- c("WGBS_WT_met", "WGBS_hetero_met", "WGBS_homo_met", "WGBS_KO_met", "RRBS_hetero_met", "RRBS_homo_met")
+samples2do_TOP <- c("WT", "Het", "Hom") 
+coverages <- readRDS("./output/code/PrepAllData/mutantai_coverages2useTopData.RDS")
+coverages_full <- coverages %>% 
+  .[, end := start] %>% 
+  .[chr %in% paste0("chr", c(1:19, "X", "Y"))] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+coverages <- coverages %>% 
+  .[WT>0, WT := 1] %>% 
+  .[Het>0, Het := 1] %>% 
+  .[Hom>0, Hom := 1] %>% 
+  .[, end := start] %>% 
+  .[, c("chr", "start", "end", samples2do_TOP), with=FALSE] %>% 
+  .[chr %in% paste0("chr", c(1:19, "X", "Y"))] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+black_list <- import("/mnt/store/annotations/MusMusculus_mm10_Ensembl/mm10-blacklist.v2.bed")
+
+tmp <- readRDS(paste0("output/code/PrepAllData//dAnnotations.RDS"))
+repeatai <- tmp[["repeatai"]]
+mcols(repeatai)$type <- paste0(mcols(repeatai)$Name, "_", mcols(repeatai)$Class, "_", mcols(repeatai)$Familly)
+mcols(repeatai)$id <- paste0("element:", 1:length(repeatai))
+repeatai <- repeatai[countOverlaps(repeatai, black_list) == 0, ]
+repeatai <- repeatai[countOverlaps(repeatai, coverages) > 4, ]
+
+annotations <- tmp[["anotacijos"]]
+annotations <- annotations[seqnames(annotations) %in% paste0("chr", c(1:19, "X", "Y"))]
+anotacijos <- c(annotations, repeatai)
+anotacijos <- anotacijos[countOverlaps(anotacijos, black_list) == 0, ]
+anotacijos <- anotacijos[countOverlaps(anotacijos, coverages) > 4, ]
+CGI <- annotations[mcols(annotations)$type == "mm10_cpg_islands"]
+
+tmp <- readRDS(paste0("output/code/PrepAllData//WGBS_vs_RRBS_data.RDS"))
+met_gr <- tmp[["methylation_gr_th"]]
+met_gr <- met_gr[seqnames(met_gr) %in% paste0("chr", c(1:19, "X", "Y"))]
+
+rm(tmp)
+gc()
+```
+
+```{r}
+ext_target <- function(x){
+  upai <- x[grepl("u", x$V1)]
+  targetai <- x[grepl("t", x$V1)]
+  targ_mod <- rbind(targetai, targetai) %>% .[, nr := gsub("t", "", V1) %>% as.numeric] %>% setkey(., nr) %>% .[, nr := NULL] %>% .[, V1 := paste0("t", 1:.N)] %>% .[]
+  downai <- x[grepl("d", x$V1)]
+  return(rbind(upai, targ_mod, downai))
+}
+```
+
+## TOP-seq data 
+
+Replication of Fig. 6A (). 
+
+```{r}
+## repeatų:
+get_per_Element <- function(elementas, TOP_data) {
+  kiekis <- countOverlaps(elementas, TOP_data[mcols(TOP_data)$Het >= 0]) 
+  s1 <- countOverlaps(elementas, TOP_data[mcols(TOP_data)$Het > 0])/kiekis 
+  s2 <- countOverlaps(elementas, TOP_data[mcols(TOP_data)$Hom > 0])/kiekis 
+  rez <- data.table(ID=mcols(elementas)$id, hetero=s1, homo=s2)
+  nuliniai <- rez[hetero == 0, ID] 
+  quant <- quantile(rez[hetero > 0, hetero] , na.rm=TRUE, c(0.0, 0.20, 0.40, 0.60, 0.80))
+
+  return(list(nuliukai=elementas[mcols(elementas)$id %in% (rez[hetero == 0, ID])], 
+              apatiniai=elementas[mcols(elementas)$id %in% (rez[(hetero > 0) & (hetero < quant[2]), ID])], 
+              vidu=elementas[mcols(elementas)$id %in% (rez[(hetero >= quant[3]) & (hetero < quant[4]), ID])], 
+              virsutiniai=elementas[mcols(elementas)$id %in% (rez[(hetero >= quant[5]), ID])]))
+}
+
+get_profile_groups <- function(grupes, TOP_data, vardas, dnmt3A, dnmt3B) {
+  if(!(file.exists(paste0(outdatadir, vardas, "_GroupsProfile.RDS")))) {
+    extend <- 4000
+    mat1 <- normalizeToMatrix(TOP_data, grupes[[1]], value_column = "Het", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 1))
+    mat2 <- normalizeToMatrix(TOP_data, grupes[[1]], value_column = "Hom", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 1))
+    mat3 <- normalizeToMatrix(TOP_data, grupes[[2]], value_column = "Het", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 1))
+    mat4 <- normalizeToMatrix(TOP_data, grupes[[2]], value_column = "Hom", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 1))            
+    mat5 <- normalizeToMatrix(TOP_data, grupes[[3]], value_column = "Het", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 1))
+    mat6 <- normalizeToMatrix(TOP_data, grupes[[3]], value_column = "Hom", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 1))
+    mat7 <- normalizeToMatrix(TOP_data, grupes[[4]], value_column = "Het", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 1))
+    mat8 <- normalizeToMatrix(TOP_data, grupes[[4]], value_column = "Hom", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 1))  
+    mat9 <- normalizeToMatrix(dnmt3A, grupes[[1]], value_column = "score", mean_mode = "coverage",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 10)) 
+    mat10 <- normalizeToMatrix(dnmt3A, grupes[[2]], value_column = "score", mean_mode = "coverage",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 10))             
+    mat11 <- normalizeToMatrix(dnmt3A, grupes[[3]], value_column = "score", mean_mode = "coverage",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 10))                         
+    mat12 <- normalizeToMatrix(dnmt3A, grupes[[4]], value_column = "score", mean_mode = "coverage",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 10))                         
+    mat13 <- normalizeToMatrix(dnmt3B, grupes[[1]], value_column = "score", mean_mode = "coverage",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 10)) 
+    mat14 <- normalizeToMatrix(dnmt3B, grupes[[2]], value_column = "score", mean_mode = "coverage",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 10))             
+    mat15 <- normalizeToMatrix(dnmt3B, grupes[[3]], value_column = "score", mean_mode = "coverage",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 10))                         
+    mat16 <- normalizeToMatrix(dnmt3B, grupes[[4]], value_column = "score", mean_mode = "coverage",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 10))                         
+    saveRDS(list(mat1, mat2, mat3, mat4, mat5, mat6, mat7, mat8, mat9, mat10, mat11, mat12, mat13, mat14, mat15, mat16), paste0(outdatadir, vardas, "_GroupsProfile.RDS"))
+    } else {
+    tmp <- readRDS(paste0(outdatadir, vardas, "_GroupsProfile.RDS"))
+    mat1 <- tmp[[1]]
+    mat2 <- tmp[[2]]
+    mat3 <- tmp[[3]]
+    mat4 <- tmp[[4]]
+    mat5 <- tmp[[5]]
+    mat6 <- tmp[[6]]
+    mat7 <- tmp[[7]]
+    mat8 <- tmp[[8]]
+    mat9 <- tmp[[9]]
+    mat10 <- tmp[[10]]
+    mat11 <- tmp[[11]]
+    mat12 <- tmp[[12]]
+    mat13 <- tmp[[13]]
+    mat14 <- tmp[[14]]
+    mat15 <- tmp[[15]]
+    mat16 <- tmp[[16]]
+    }
+  row_tvarka <- as.data.table(colMeans(mat1[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target() %>% .[, V1]
+
+  df <- rbind(
+    as.data.table(colMeans(mat1[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target() %>% .[, sample := "Het"] %>% .[, grupe := "0%"] %>% .[, V2 := V2 * 100], 
+    as.data.table(colMeans(mat2[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target()%>% .[, sample := "Hom"] %>% .[, grupe := "0%"] %>% .[, V2 := V2 * 100], 
+    as.data.table(colMeans(mat3[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target() %>% .[, sample := "Het"] %>% .[, grupe := "20%"] %>% .[, V2 := V2 * 100], 
+    as.data.table(colMeans(mat4[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target()%>% .[, sample := "Hom"] %>% .[, grupe := "20%"] %>% .[, V2 := V2 * 100], 
+    as.data.table(colMeans(mat5[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target()%>% .[, sample := "Het"] %>% .[, grupe := "40-60%"] %>% .[, V2 := V2 * 100], 
+    as.data.table(colMeans(mat6[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target()%>% .[, sample := "Hom"] %>% .[, grupe := "40-60%"] %>% .[, V2 := V2 * 100], 
+    as.data.table(colMeans(mat7[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target()%>% .[, sample := "Het"] %>% .[, grupe := "80%"]%>% .[, V2 := V2 * 100], 
+    as.data.table(colMeans(mat8[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target() %>% .[, sample := "Hom"] %>% .[, grupe := "80%"]%>% .[, V2 := V2 * 100], 
+    as.data.table(colMeans(mat9[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target() %>% .[, sample := "dnmt3A"] %>% .[, grupe := "0%"] %>% .[, V2 := V2 * 100], 
+    as.data.table(colMeans(mat13[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target()%>% .[, sample := "dnmt3B"] %>% .[, grupe := "0%"] %>% .[, V2 := V2 * 100], 
+    as.data.table(colMeans(mat10[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target() %>% .[, sample := "dnmt3A"] %>% .[, grupe := "20%"] %>% .[, V2 := V2 * 100], 
+    as.data.table(colMeans(mat14[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target()%>% .[, sample := "dnmt3B"] %>% .[, grupe := "20%"] %>% .[, V2 := V2 * 100], 
+    as.data.table(colMeans(mat11[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target()%>% .[, sample := "dnmt3A"] %>% .[, grupe := "40-60%"] %>% .[, V2 := V2 * 100], 
+    as.data.table(colMeans(mat15[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target()%>% .[, sample := "dnmt3B"] %>% .[, grupe := "40-60%"] %>% .[, V2 := V2 * 100], 
+    as.data.table(colMeans(mat12[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target()%>% .[, sample := "dnmt3A"] %>% .[, grupe := "80%"]%>% .[, V2 := V2 * 100], 
+    as.data.table(colMeans(mat16[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target() %>% .[, sample := "dnmt3B"] %>% .[, grupe := "80%"]%>% .[, V2 := V2 * 100]
+    ) %>% 
+    as.data.table() %>% 
+    .[, V1 := factor(V1, levels=row_tvarka)] %>% 
+    .[, element := vardas]  
+  return(df)
+}
+```
+
+
+```{r, fig.width=8, fig.height=12}
+dnmt3A <- import("input/OtherData/GSM3772691_mESC_Par_DNMT3A.bw")
+dnmt3B <- import("input/OtherData/GSM3772694_mESC_Par_DNMT3B.bw")
+
+if(!file.exists((paste0(outdatadir, "Profiles_regu_groups.RDS")))) {
+temp <- rbind(
+  get_profile_groups(get_per_Element(annotations[mcols(annotations)$type == "mm10_EPDpromoters"],  coverages), coverages, 'EPDpromoter', dnmt3A, dnmt3B),
+  get_profile_groups(get_per_Element(annotations[mcols(annotations)$type == "mm10_Silencer_E14"],  coverages), coverages, 'Silencers_E14', dnmt3A, dnmt3B),
+  get_profile_groups(get_per_Element(annotations[mcols(annotations)$type == "mm10_Silencer_mESC"],  coverages), coverages, 'Silencers_mESC', dnmt3A, dnmt3B),
+  get_profile_groups(get_per_Element(annotations[mcols(annotations)$type == "mm10_enhancers_fantom"],  coverages), coverages, 'enhancers_fantom', dnmt3A, dnmt3B),
+  get_profile_groups(get_per_Element(annotations[mcols(annotations)$type == "mm10_enhancers"],  coverages), coverages, 'enhancers_atlas', dnmt3A, dnmt3B),
+  get_profile_groups(get_per_Element(annotations[mcols(annotations)$type == "mm10_CTCF"],  coverages), coverages, 'CTCF', dnmt3A, dnmt3B),
+  get_profile_groups(get_per_Element(CGI[countOverlaps(CGI, annotations[mcols(annotations)$type == "mm10_EPDpromoters"]) > 0, ],  coverages), coverages, 'CGI promoters', dnmt3A, dnmt3B),
+  get_profile_groups(get_per_Element(CGI[(countOverlaps(CGI, annotations[mcols(annotations)$type == "mm10_transcriptsCoding"]) == 0) & (countOverlaps(CGI, annotations[mcols(annotations)$type == "mm10_EPDpromoters"]) == 0), ],  coverages), coverages, 'CGI intergenic', dnmt3A, dnmt3B),
+  get_profile_groups(get_per_Element(CGI[(countOverlaps(CGI, annotations[mcols(annotations)$type == "mm10_transcriptsCoding"]) != 0), ],  coverages), coverages, 'CGI intragenic', dnmt3A, dnmt3B),
+  get_profile_groups(get_per_Element(CGI[countOverlaps(CGI, annotations[mcols(annotations)$type == "mm10_transcriptsCoding"]) > 0, ]  ,  coverages), coverages, 'CGI intergenic', dnmt3A, dnmt3B)
+)
+saveRDS(temp, paste0(outdatadir, "Profiles_regu_groups.RDS")) } else {temp <- readRDS(paste0(outdatadir, "Profiles_regu_groups.RDS"))}
+
+temp %>% 
+  .[sample %in% c("Het", "Hom"), ] %>%  
+  ggplot(aes(V1, V2, group=grupe, colour=grupe)) +
+      geom_line(size=0.5, alpha=0.75, lwd=1.25) +
+      theme_Publication() +
+      theme_bw() +
+      ylab("Identified CpG, %") +
+      theme(axis.title.x=element_blank(), 
+            legend.position="bottom",
+            panel.grid.major=element_blank(),
+            panel.background=element_blank()
+            ) +
+      coord_cartesian(ylim=c(0, 100)) +
+      scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
+#      scale_colour_manual(values = cols_samplesLong) +
+      facet_grid(vars(element), vars(sample)) +
+      geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
+      geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
+
+temp %>% 
+  .[!(sample %in% c("Het", "Hom")), ] %>%  
+  ggplot(aes(V1, V2, group=grupe, colour=grupe)) +
+      geom_line(size=0.5, alpha=0.75, lwd=1.25) +
+      theme_Publication() +
+      theme_bw() +
+      ylim(c(200, 800)) +
+      ylab("Coverage, reads") +
+      theme(axis.title.x=element_blank(), 
+            legend.position="bottom",
+            panel.grid.major=element_blank(),
+            panel.background=element_blank()
+            ) +
+#      coord_cartesian(ylim=c(0, 10)) +
+      scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
+#      scale_colour_manual(values = cols_samplesLong) +
+      facet_grid(vars(element), vars(sample)) +
+      geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
+      geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
+
+```
+
+
+```{r, fig.width=8, fig.height=12}
+if(!(file.exists(paste0(outdatadir, "Profiles_repeatai_groups.RDS")))) {
+  temp <- rbind(
+    get_profile_groups(get_per_Element(repeatai[mcols(repeatai)$Class == "LINE"],  coverages), coverages, 'LINE', dnmt3A, dnmt3B),
+    get_profile_groups(get_per_Element(repeatai[mcols(repeatai)$Class == "SINE"],  coverages), coverages, 'SINE', dnmt3A, dnmt3B),
+    get_profile_groups(get_per_Element(repeatai[mcols(repeatai)$Class == "LTR"],  coverages), coverages, 'LTR', dnmt3A, dnmt3B),
+    get_profile_groups(get_per_Element(repeatai[mcols(repeatai)$Class == "Satellite"],  coverages), coverages, 'Satellite', dnmt3A, dnmt3B),
+    get_profile_groups(get_per_Element(repeatai[mcols(repeatai)$Class == "DNA"],  coverages), coverages, 'DNA', dnmt3A, dnmt3B),
+    get_profile_groups(get_per_Element(repeatai[mcols(repeatai)$Class == "Simple_repeat"],  coverages), coverages, 'Simple_repeat', dnmt3A, dnmt3B)
+  )
+  saveRDS(temp, paste0(outdatadir, "Profiles_repeatai_groups.RDS")) } else {temp <- readRDS(paste0(outdatadir, "Profiles_repeatai_groups.RDS"))}
+
+temp %>% 
+  .[sample %in% c("Het", "Hom"), ] %>%  
+  ggplot(aes(V1, V2, group=grupe, colour=grupe)) +
+      geom_line(size=0.5, alpha=0.75, lwd=1.25) +
+      theme_Publication() +
+      theme_bw() +
+      ylab("Identified CpG, %") +
+      theme(axis.title.x=element_blank(), 
+            legend.position="bottom",
+            panel.grid.major=element_blank(),
+            panel.background=element_blank()
+            ) +
+      coord_cartesian(ylim=c(0, 100)) +
+      scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
+#      scale_colour_manual(values = cols_samplesLong) +
+      facet_grid(vars(element), vars(sample)) +
+      geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
+      geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
+
+temp %>% 
+  .[!(sample %in% c("Het", "Hom")), ] %>%  
+  ggplot(aes(V1, V2, group=grupe, colour=grupe)) +
+      geom_line(size=0.5, alpha=0.75, lwd=1.25) +
+      theme_Publication() +
+      theme_bw() +
+      ylab("Coverage, reads") +
+      ylim(c(200, 800)) +
+      theme(axis.title.x=element_blank(), 
+            legend.position="bottom",
+            panel.grid.major=element_blank(),
+            panel.background=element_blank()
+            ) +
+      #coord_cartesian(ylim=c(0, 10)) +
+      scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
+#      scale_colour_manual(values = cols_samplesLong) +
+      facet_grid(vars(element), vars(sample)) +
+      geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
+      geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
+```
+
+## Prasymas I 
+
+Atskiru prasymu paieskota, ar yra tokiu elementu, kur Dnmt-seq patenka į TOP grupę, o ChIP rodo apatinę grupę (ir atvirkščiai). 
+
+Daryta tik promotoriams ir CGI iš promotorių, nes sitie atrodo logiski iš biologinės pusės. 
+
+noDnmt_highChip - tie promotoriai, kur nėra (0) Dnmt-seq signalo ir daug ChIP.
+lowDnmt_highChip - tie promotoriai, kur priklauso mažiausiai signalo turinčiai Dnmt-seq grupei ir daug ChIP.
+highDnmt_lowChip - tie promotoriai, kur priklauso daugiausia signalo turinčiai Dnmt-seq grupei ir mažai ChIP.
+
+
+
+```{r}
+get_per_Element_ChIP <- function(elementas, TOP_data) {
+  #elementas <- anotacijos[mcols(anotacijos)$type == "mm10_EPDpromoters", ]
+  #TOP_data <- dnmt3A
+
+  fo <- findOverlaps(elementas, TOP_data)
+  dcov <- cbind(mcols(elementas[queryHits(fo)])$gene_id, mcols(TOP_data[subjectHits(fo)])$score) %>% 
+    as.data.table() %>% 
+    .[, V2 := as.numeric(V2)] %>% 
+    .[, lapply(.SD, mean), by="V1"] %>% 
+    .[]
+  
+  quant <- quantile(dcov[V2 > 0, V2] , na.rm=TRUE, c(0.0, 0.20, 0.40, 0.60, 0.80))
+
+  return(list(nuliukai=elementas[mcols(elementas)$gene_id %in% (dcov[V2 == 0, V1])], 
+              apatiniai=elementas[mcols(elementas)$gene_id %in% (dcov[(V2 > 0) & (V2 < quant[2]), V1])], 
+              vidu=elementas[mcols(elementas)$gene_id %in% (dcov[(V2 >= quant[3]) & (V2 < quant[4]), V1])], 
+              virsutiniai=elementas[mcols(elementas)$gene_id %in% (dcov[(V2 >= quant[5]), V1])]))
+}
+
+grupes_dnmtA <- get_per_Element_ChIP(anotacijos[mcols(anotacijos)$type == "mm10_EPDpromoters", ], dnmt3A)
+grupes_dnmtB <- get_per_Element_ChIP(anotacijos[mcols(anotacijos)$type == "mm10_EPDpromoters", ], dnmt3B)
+
+grupes_Dnmtseq <- get_per_Element(annotations[mcols(annotations)$type == "mm10_EPDpromoters"],  coverages)
+
+nulu_vs_virsu_A <- intersect(mcols(grupes_Dnmtseq[["nuliukai"]])$gene_id, mcols(grupes_dnmtA[["virsutiniai"]])$gene_id) 
+nulu_vs_virsu_B <- intersect(mcols(grupes_Dnmtseq[["nuliukai"]])$gene_id, mcols(grupes_dnmtB[["virsutiniai"]])$gene_id) 
+
+apa_vs_virsu_A <- intersect(mcols(grupes_Dnmtseq[["apatiniai"]])$gene_id, mcols(grupes_dnmtA[["virsutiniai"]])$gene_id) 
+apa_vs_virsu_B <- intersect(mcols(grupes_Dnmtseq[["apatiniai"]])$gene_id, mcols(grupes_dnmtB[["virsutiniai"]])$gene_id) 
+
+virsu_vs_apa_A <- intersect(mcols(grupes_Dnmtseq[["virsutiniai"]])$gene_id, mcols(grupes_dnmtA[["apatiniai"]])$gene_id) 
+virsu_vs_apa_B <- intersect(mcols(grupes_Dnmtseq[["virsutiniai"]])$gene_id, mcols(grupes_dnmtB[["apatiniai"]])$gene_id) 
+
+sarasasA <- list(noDnmt_highChip=nulu_vs_virsu_A, lowDnmt_highChip=apa_vs_virsu_A, highDnmt_lowChip=virsu_vs_apa_A, noLowDnmt_highChip=unique(c(nulu_vs_virsu_A, apa_vs_virsu_A)))
+sarasasB <- list(noDnmt_highChip=nulu_vs_virsu_B, lowDnmt_highChip=apa_vs_virsu_B, highDnmt_lowChip=virsu_vs_apa_B, noLowDnmt_highChip=unique(c(nulu_vs_virsu_B, apa_vs_virsu_B)))
+
+ckA <- compareCluster(geneCluster=sarasasA, 
+                        fun=enrichGO, 
+                        universe=mcols(anotacijos[mcols(anotacijos)$type == "mm10_EPDpromoters", ])$gene_id,
+                        OrgDb=org.Mm.eg.db, 
+                        keyType="ENSEMBL", 
+                        minGSSize = 5,
+                        ont="BP")
+
+ckB <- compareCluster(geneCluster=sarasasB, 
+                        fun=enrichGO, 
+                        universe=mcols(anotacijos[mcols(anotacijos)$type == "mm10_EPDpromoters", ])$gene_id,
+                        OrgDb=org.Mm.eg.db, 
+                        keyType="ENSEMBL", 
+                        minGSSize = 5,
+                        ont="BP")
+
+
+dotplot(ckA) + ggtitle("ChIP-seq DnmtA. Promoter")
+dotplot(ckB) + ggtitle("ChIP-seq DnmtB. Promoter")
+```
+
+
+```{r}
+CGI_from_prom <- CGI[countOverlaps(CGI, annotations[mcols(annotations)$type == "mm10_EPDpromoters"]) > 0, ]
+mcols(CGI_from_prom)$gene_id <- mcols(CGI_from_prom)$id
+
+grupes_dnmtA <- get_per_Element_ChIP(CGI_from_prom, dnmt3A)
+grupes_dnmtB <- get_per_Element_ChIP(CGI_from_prom, dnmt3B)
+
+grupes_Dnmtseq <- get_per_Element(CGI_from_prom,  coverages)
+
+nulu_vs_virsu_A <- intersect(mcols(grupes_Dnmtseq[["nuliukai"]])$id, mcols(grupes_dnmtA[["virsutiniai"]])$id) 
+nulu_vs_virsu_B <- intersect(mcols(grupes_Dnmtseq[["nuliukai"]])$id, mcols(grupes_dnmtB[["virsutiniai"]])$id) 
+
+apa_vs_virsu_A <- intersect(mcols(grupes_Dnmtseq[["apatiniai"]])$id, mcols(grupes_dnmtA[["virsutiniai"]])$id) 
+apa_vs_virsu_B <- intersect(mcols(grupes_Dnmtseq[["apatiniai"]])$id, mcols(grupes_dnmtB[["virsutiniai"]])$id) 
+
+
+fo <- findOverlaps(CGI, annotations[mcols(annotations)$type == "mm10_EPDpromoters"])
+CGI2prom <- cbind(mcols(CGI[queryHits(fo)])$id, mcols(annotations[mcols(annotations)$type == "mm10_EPDpromoters"][subjectHits(fo)])$gene_id) %>% 
+  as.data.table() %>% 
+  setnames(., c("CGI", "gene_id"))
+
+
+sarasasA <- list(noDnmt_highChip=(CGI2prom[CGI %in% nulu_vs_virsu_A, gene_id] %>% unique), lowDnmt_highChip=(CGI2prom[CGI %in% apa_vs_virsu_A, gene_id] %>% unique))
+sarasasB <- list(noDnmt_highChip=(CGI2prom[CGI %in% nulu_vs_virsu_B, gene_id] %>% unique), lowDnmt_highChip=(CGI2prom[CGI %in% apa_vs_virsu_B, gene_id] %>% unique))
+
+ckA <- compareCluster(geneCluster=sarasasA, 
+                        fun=enrichGO, 
+                        universe=mcols(anotacijos[mcols(anotacijos)$type == "mm10_EPDpromoters", ])$gene_id,
+                        OrgDb=org.Mm.eg.db, 
+                        keyType="ENSEMBL", 
+                        minGSSize = 10,
+                        ont="BP")
+
+ckB <- compareCluster(geneCluster=sarasasB, 
+                        fun=enrichGO, 
+                        universe=mcols(anotacijos[mcols(anotacijos)$type == "mm10_EPDpromoters", ])$gene_id,
+                        OrgDb=org.Mm.eg.db, 
+                        keyType="ENSEMBL", 
+                        minGSSize = 10,
+                        ont="BP")
+
+
+dotplot(ckA) + ggtitle("ChIP-seq DnmtA. CGI is promotoriu")
+dotplot(ckB) + ggtitle("ChIP-seq DnmtB. CGI is promotoriu")
+```
+
+Random grafikai sutikrinimui, ar geros grupes. 
+
+```{r}
+# Sutikrinam, ar ok. 
+
+
+get_mean_per_group <- function(x, covai, tipas) {
+  # x <-  grupes_Dnmtseq[[4]]
+  # covai <- coverages
+ 
+  fo <- findOverlaps(x, covai)
+  data.table(ID=mcols(x[queryHits(fo)])$id, COV=mcols(covai[subjectHits(fo)])$Het) %>% 
+    .[, lapply(.SD, mean), by="ID"] %>% 
+    .[, grupe := tipas] %>% 
+    .[]
+}
+
+rbind(
+  get_mean_per_group(grupes_Dnmtseq[[4]], coverages, "High"),
+  get_mean_per_group(grupes_Dnmtseq[[3]], coverages, "Mid"), 
+  get_mean_per_group(grupes_Dnmtseq[[2]], coverages, "Low"),
+   get_mean_per_group(grupes_Dnmtseq[[1]], coverages, "Zero")) %>% 
+   ggplot(aes(grupe, COV)) +
+    geom_boxplot() +
+    theme_bw()  
+
+get_mean_per_group_chip <- function(x, covai, tipas) {
+  # x <-  grupes_Dnmtseq[[4]]
+  # covai <- coverages
+ 
+  fo <- findOverlaps(x, covai)
+  data.table(ID=mcols(x[queryHits(fo)])$id, COV=mcols(covai[subjectHits(fo)])$score) %>% 
+    .[, lapply(.SD, mean), by="ID"] %>% 
+    .[, grupe := tipas] %>% 
+    .[]
+}
+
+rbind(
+  get_mean_per_group_chip(grupes_dnmtA[[4]], dnmt3A, "High"),
+  get_mean_per_group_chip(grupes_dnmtA[[3]], dnmt3A, "Mid"), 
+  get_mean_per_group_chip(grupes_dnmtA[[2]], dnmt3A, "Low"),
+   get_mean_per_group_chip(grupes_dnmtA[[1]], dnmt3A, "Zero")) %>% 
+   ggplot(aes(grupe, COV)) +
+    geom_boxplot(outlier.shaper=NA) +
+    coord_cartesian(ylim=c(0, 25)) +
+    theme_bw()  
+
+
+rbind(
+  get_mean_per_group_chip(grupes_dnmtB[[4]], dnmt3B, "High"),
+  get_mean_per_group_chip(grupes_dnmtB[[3]], dnmt3B, "Mid"), 
+  get_mean_per_group_chip(grupes_dnmtB[[2]], dnmt3B, "Low"),
+   get_mean_per_group_chip(grupes_dnmtB[[1]], dnmt3B, "Zero")) %>% 
+   ggplot(aes(grupe, COV)) +
+    geom_boxplot(outlier.shape=NA) +
+    coord_cartesian(ylim=c(0, 25)) +
+    theme_bw()  
+
+
+
+
+```

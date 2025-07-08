@@ -1,0 +1,669 @@
+```{r}
+library(pacman)
+p_load(data.table, dplyr, ggplot2, rtracklayer, RColorBrewer, scales, foreach, GenomicRanges, clusterProfiler, doParallel, 
+viridis, annotatr, stringr, GGally, circlize, corrplot, patchwork, org.Mm.eg.db, Mfuzz, xlsx)
+options(scipen=999)
+knitr::opts_chunk$set(fig.width=15, fig.height=9)
+dir.create(outdatadir, recursive=TRUE)
+source("./code/common.R")
+set.seed(1234)
+```
+
+# Selected clusters {.tabset}
+
+```{r}
+samples2do_BS <- c("A0D_met", "A2D_met", "A4D_met", "A8D_met")
+samples2do_TOP <- c("D0azide_R1", "D2azide_R1", "D4azide_R1", "D8azide_R1", "D0azide_R2", "D2azide_R2", "D4azide_R2", "D8azide_R2") 
+coverages <- readRDS("./output/code/PrepAllData/diferenciacija_coverages2useTopData.RDS")
+coverages_gr <- coverages %>% 
+  .[, end := start] %>% 
+  .[chr %in% paste0("chr", c(1:19, "X", "Y"))] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+coveragesOnly1_gr <- coverages %>% 
+  .[D0azide>0, D0azide := 1] %>% 
+  .[D2azide>0, D2azide := 1] %>% 
+  .[D4azide>0, D4azide := 1] %>% 
+  .[D8azide>0, D8azide := 1] %>% 
+  .[D0azide_R1>0, D0azide_R1 := 1] %>% 
+  .[D2azide_R1>0, D2azide_R1 := 1] %>% 
+  .[D4azide_R1>0, D4azide_R1 := 1] %>% 
+  .[D8azide_R1>0, D8azide_R1 := 1] %>% 
+  .[D0azide_R2>0, D0azide_R2 := 1] %>% 
+  .[D2azide_R2>0, D2azide_R2 := 1] %>% 
+  .[D4azide_R2>0, D4azide_R2 := 1] %>% 
+  .[D8azide_R2>0, D8azide_R2 := 1] %>% 
+  .[, end := start] %>% 
+  .[chr %in% paste0("chr", c(1:19, "X", "Y"))] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+tmp <- readRDS(paste0("output/code/PrepAllData//dAnnotations.RDS"))
+repeatai <- tmp[["repeatai"]]
+mcols(repeatai)$type <- paste0(mcols(repeatai)$Name, "_", mcols(repeatai)$Class, "_", mcols(repeatai)$Familly)
+annotations <- tmp[["anotacijos"]]
+annotations <- annotations[seqnames(annotations) %in% paste0("chr", c(1:19, "X", "Y"))]
+anotacijos <- c(annotations, repeatai)
+
+RRBS <- readRDS("./output/code/PrepAllData/differentiations_RRBS.RDS")
+RRBS_gr <- RRBS$methylation_gr_th[!is.na(rowSums(as.data.table(elementMetadata(RRBS$methylation_gr_th)[, -1])))]
+
+rm(tmp)
+gc()
+
+promotoriai <- annotations[annotations$type == "mm10_EPDpromoters"]
+CGI <- annotations[annotations$type == "mm10_cpg_islands"]
+tmp <- paste0(seqnames(CGI), "_", start(CGI), "_", end(CGI))
+mcols(CGI) <- NULL
+mcols(CGI)$ID <- tmp
+mcols(CGI)$featID <- tmp
+
+fo <- findOverlaps(CGI, promotoriai)
+CGI2gene <- data.table(CGI_ID=elementMetadata(CGI[queryHits(fo)])$ID, geneID=elementMetadata(promotoriai[subjectHits(fo)])[, "gene_id"]) %>% setnames(., c("featID", "geneID"))
+CGI <- CGI[queryHits(fo)]
+
+allGenes <- mcols(promotoriai)$gene_id %>% unique
+allIDS_KEGG <- bitr(allGenes, fromType="ENSEMBL", toType=c("ENTREZID"), OrgDb="org.Mm.eg.db")
+```
+
+
+```{r}
+do_mfuzz <- function(regionai, padengimai, clusters, vardas) {
+  if(!file.exists(paste0(outdatadir, vardas, "_mfuzz.RDS"))) {
+    fo <- findOverlaps(regionai, padengimai)
+    d <- cbind(elementMetadata(regionai[queryHits(fo)])[, 'ID'], elementMetadata(padengimai[subjectHits(fo)])[, c('D0azide', 'D2azide', 'D4azide', 'D8azide')]) %>% 
+      as.data.table() %>% 
+      setnames(., c("ID", "D0azide", "D2azide", "D4azide", "D8azide")) %>% 
+      .[, lapply(.SD, sum), by="ID"]
+    d <- d[rowSums(d[, -1]) > 0, ]
+    sel_counts <- d[, -1, with=FALSE] 
+    dd <- rbind(c(1, 2, 3, 4), as.matrix(sel_counts))
+    rownames(dd) <- c("time", d$ID)
+    colnames(dd) <- c("D0", "D2", "D4", "D8")
+    tmp <- tempfile()
+    write.table(dd,file=tmp, sep='\t', quote = F, col.names=NA)
+    data <- table2eset(file=tmp)
+    data.s <- standardise(data)
+    data.s <- data.s[rowSums(is.na(exprs(data.s)))==0] 
+    m1 <- mestimate(data.s)
+    set.seed(1987)
+    cx <- mfuzz(data.s, c=clusters, m=m1)
+    acore <- acore(data.s, cx, min.acore=0)
+    acore_list <- do.call(rbind, lapply(seq_along(acore), function(i){ data.frame(CLUSTER=i, acore[[i]])}))
+    saveRDS(list(m1=m1, dataS=data.s, acore=acore, acoreList=acore_list, cx=cx), paste0(outdatadir, vardas, "_mfuzz.RDS"))
+    return(list(m1=m1, dataS=data.s, acore=acore, acoreList=acore_list, cx=cx))
+  } else {
+    rez <- readRDS(paste0(outdatadir, vardas, "_mfuzz.RDS"))
+    return(list(m1=rez[["m1"]], dataS=rez[["dataS"]], acore=rez[["acore"]], acoreList=rez[["acoreList"]], cx=rez[["cx"]]))
+  }}
+
+do_cluster <- function(acoreList, kitimas, CGI2gene, allGenes, data.s, vardas, allIDs=allIDS_KEGG) {
+  ID2sel <- acoreList %>% 
+    as.data.table() %>% 
+    .[CLUSTER %in% kitimas, NAME]
+
+  d2save <- exprs(data.s) %>% 
+    as.data.table(., keep.rownames=TRUE) %>% 
+    .[rn %in% ID2sel, ] %>% 
+    melt()
+
+  fig_prof <- d2save %>% 
+    ggplot(aes(variable, value, group=rn)) +
+      geom_line(alpha=0.5, lwd=0.5, colour="grey") +
+      theme_bw() +
+      xlab("Time") +
+      ylab("Normalized value") +
+      ggtitle(paste0("Genes used: ", length(ID2sel)))
+
+  gene2GO <- CGI2gene[featID %in% ID2sel, geneID] %>% unique
+
+  ego_all <- enrichGO(gene = unique(gene2GO),
+            universe = allGenes,
+            OrgDb = org.Mm.eg.db, 
+            readable = TRUE, 
+            pAdjustMethod = "BH",
+            keyType = "ENSEMBL", 
+            ont = "BP"
+                )
+  gene2GO <- CGI2gene[featID %in% ID2sel, geneID] %>% unique
+  ids <- bitr(gene2GO, fromType="ENSEMBL", toType=c("ENTREZID"), OrgDb="org.Mm.eg.db")
+  KEGG_all <- enrichKEGG(gene = unique(ids$ENTREZID),
+            keyType = "ncbi-geneid", 
+            universe = allIDs$ENTREZID,
+            organism = "mmu"
+                )       
+  saveRDS(list(genes2do=gene2GO, profiliui=d2save, GO=ego_all, ID=ID2sel), paste0(outdatadir, vardas, ".RDS"))                
+return(list(genes2do=gene2GO, fig_prof=fig_prof, GO=ego_all, KEGG=KEGG_all))}
+
+draw_bar <- function(x) {
+  kiekis <- nrow(x)
+  if(kiekis != 0) {
+  p <- x %>% 
+      as.data.table() %>% 
+        .[, .(Description, GeneRatio, BgRatio, p.adjust)] %>% 
+        .[, af := strsplit(GeneRatio, "/") %>% sapply(., `[`, 1) %>% as.numeric()] %>% 
+        .[, bf := strsplit(GeneRatio, "/") %>% sapply(., `[`, 2) %>% as.numeric()] %>% 
+        .[, foreground := af/bf] %>% 
+        .[, a := strsplit(BgRatio, "/") %>% sapply(., `[`, 1) %>% as.numeric()] %>% 
+        .[, b := strsplit(BgRatio, "/") %>% sapply(., `[`, 2) %>% as.numeric()] %>% 
+        .[, Background := a/b] %>% 
+        .[, Enrichment := foreground/Background] %>% 
+  #      .[, .(Enrichment, p.adjust, Description)] %>%   
+        setkey(., p.adjust) %>%   
+        #.[order(p.adjust), ] %>% 
+        .[, Description := factor(Description, levels=unique(Description))] %>% 
+       .[, pval := (-1)*log10(p.adjust)] %>%   
+        head(10) %>% 
+    ggplot(aes(Description, pval)) +
+        geom_point(size=2, shape=21) +
+        #geom_col() +
+        geom_segment(aes(xend=Description, yend=0)) +
+        geom_point(size=2, shape=21) +
+        coord_flip() +
+        theme_bw() +
+        scale_x_discrete(labels = function(x) str_wrap(x, width = 20)) +
+        scale_fill_gradient(breaks=c(0, 0.025, 0.05),
+                            limits=c(0, 0.05),
+                            low = "yellow", 
+                            high = "red") +
+      # facet_wrap(~type, nrow=1, scales="free") +
+        theme(legend.position="bottom") +
+        ggtitle(paste0("Total enriched terms: ", kiekis)) +
+        theme_Publication() +
+        theme(axis.title.y=element_blank()) +
+        ylab("-1*log10(p.adjusted)") } else {p <- plot_spacer()}
+  return(p)        
+}
+
+draw_KEGG_bar <- function(x) {
+  kiekis <- nrow(x)
+  if(kiekis != 0) {
+      p <- x %>% 
+        as.data.table() %>% 
+          .[, .(Description, GeneRatio, BgRatio, p.adjust)] %>% 
+          .[, Description := gsub("- Mus musculus \\(house mouse\\)", "", Description)] %>%
+          .[, af := strsplit(GeneRatio, "/") %>% sapply(., `[`, 1) %>% as.numeric()] %>% 
+          .[, bf := strsplit(GeneRatio, "/") %>% sapply(., `[`, 2) %>% as.numeric()] %>% 
+          .[, foreground := af/bf] %>% 
+          .[, a := strsplit(BgRatio, "/") %>% sapply(., `[`, 1) %>% as.numeric()] %>% 
+          .[, b := strsplit(BgRatio, "/") %>% sapply(., `[`, 2) %>% as.numeric()] %>% 
+          .[, Background := a/b] %>% 
+          .[, Enrichment := foreground/Background] %>% 
+          setkey(., p.adjust) %>%   
+          .[, Description := factor(Description, levels=unique(Description))] %>% 
+        .[, pval := (-1)*log10(p.adjust)] %>%   
+          head(10) %>% 
+      ggplot(aes(Description, pval)) +
+          geom_point(size=2, shape=21) +
+          geom_segment(aes(xend=Description, yend=0)) +
+          geom_point(size=2, shape=21) +
+          coord_flip() +
+          theme_bw() +
+          scale_x_discrete(labels = function(x) str_wrap(x, width = 20)) +
+          scale_fill_gradient(breaks=c(0, 0.025, 0.05),
+                              limits=c(0, 0.05),
+                              low = "yellow", 
+                              high = "red") +
+          theme(legend.position="bottom") +
+          ggtitle(paste0("Total KEGG terms: ", kiekis)) +
+          theme_Publication() +
+          theme(axis.title.y=element_blank()) +
+          ylab("-1*log10(p.adjusted)") } else {p <- plot_spacer()}
+  return(p)        
+}
+
+```
+
+
+## CGI with target number
+
+Not more than 10 top (by adjusted p-value) terms plotted. 
+
+Clusters that were used: 13, 6, 7, 1, 15, 10, 12, 5, 25, 14
+
+```{r}
+rez <- do_mfuzz(CGI, coveragesOnly1_gr, 25, "CGI_targNo")
+m1 <- rez[["m1"]]
+data.s <- rez[["dataS"]]
+acore <- rez[["acore"]]
+acoreList <- rez[["acoreList"]]
+cx <- rez[["cx"]]
+#pdf("tmp2.pdf")
+#mfuzz.plot(data.s, cl=cx, mfrow=c(4, 5), time.labels=c("D0","D2", "D4", "D8"), new.window=FALSE)
+#dev.off()
+
+mfuzz.plot(data.s, cl=cx, mfrow=c(5, 5), time.labels=c("D0","D2", "D4", "D8"), new.window=FALSE)
+
+kitimas_1 <- c(13)
+kitimas_2 <- c(6, 7)
+kitimas_3 <- c(1)
+kitimas_4 <- c(15)
+kitimas_5 <- c(10)
+kitimas_6 <- c(12)
+kitimas_7 <- c(5, 25)
+kitimas_8 <- c(14)
+```
+
+```{r, fig.height=25, fig.width=18}
+rezu <- do_cluster(acoreList, kitimas_1, CGI2gene, allGenes, data.s, "tar_13")
+p1 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]  
+p1A <- rezu[[2]]
+xlsx_1 <- rezu[[3]]
+
+rezu <- do_cluster(acoreList, c(kitimas_2, kitimas_7), CGI2gene, allGenes, data.s, "tar_6.7.5.25")
+p2 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]
+p2A <- rezu[[2]]
+xlsx_2 <- rezu[[3]]
+
+rezu <- do_cluster(acoreList, kitimas_3, CGI2gene, allGenes, data.s, "tar_1")
+p3 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]
+p3A <- rezu[[2]]
+xlsx_3 <- rezu[[3]]
+
+
+rezu <- do_cluster(acoreList, kitimas_4, CGI2gene, allGenes, data.s, "tar_15")
+p4 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) +rezu[[2]]
+p4A <- rezu[[2]]
+xlsx_4 <- rezu[[3]]
+
+rezu <- do_cluster(acoreList, kitimas_5, CGI2gene, allGenes, data.s, "tar_10")
+p5 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]
+p5A <- rezu[[2]]
+xlsx_5 <- rezu[[3]]
+
+rezu <- do_cluster(acoreList, kitimas_6, CGI2gene, allGenes, data.s, "tar_12")
+p6 <-  draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]
+p6A <- rezu[[2]]
+xlsx_6 <- rezu[[3]]
+
+#rezu <- do_cluster(acoreList, kitimas_7, CGI2gene, allGenes, data.s, "tar_5.25")
+#p7 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]
+#p7A <- rezu[[2]]
+#xlsx_7 <- rezu[[3]]
+
+rezu <- do_cluster(acoreList, kitimas_8, CGI2gene, allGenes, data.s, "tar_14")
+p8 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]
+p8A <- rezu[[2]]
+xlsx_8 <- rezu[[3]]
+
+
+(p1 | p2) / (p3 | p4) / (p5 | p6) / (plot_spacer() | p8)
+```
+
+## CGI with coverage
+
+Clusters used: 25, 8, 22, 10, 13, 19, 3, 7, 15, 4, 17
+```{r}
+rez <- do_mfuzz(CGI, coverages_gr, 28, "CGI_tarCov")
+m1 <- rez[["m1"]]
+data.s <- rez[["dataS"]]
+acore <- rez[["acore"]]
+acoreList <- rez[["acoreList"]]
+cx <- rez[["cx"]]
+#pdf("tmp2.pdf")
+#mfuzz.plot(data.s, cl=cx, mfrow=c(4, 5), time.labels=c("D0","D2", "D4", "D8"), new.window=FALSE)
+#dev.off()
+
+mfuzz.plot(data.s, cl=cx, mfrow=c(6, 5), time.labels=c("D0","D2", "D4", "D8"), new.window=FALSE)
+
+kitimas_1 <- c(25)
+kitimas_2 <- c(8, 22)
+kitimas_3 <- c(10, 13)
+kitimas_4 <- c(19)
+kitimas_5 <- c()
+kitimas_6 <- c()
+kitimas_7 <- c(3, 7, 15)
+kitimas_8 <- c(4, 17)
+```
+
+```{r, fig.height=25, fig.width=18}
+rezu <- do_cluster(acoreList, kitimas_1, CGI2gene, allGenes, data.s, "cov_25")
+p1 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]
+xlsx1_1 <- rezu[[3]]
+
+rezu <- do_cluster(acoreList, kitimas_2, CGI2gene, allGenes, data.s, "cov_8.22")
+p2 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]
+xlsx2_1 <- rezu[[3]]
+
+rezu <- do_cluster(acoreList, kitimas_3, CGI2gene, allGenes, data.s, "cov_10.13")
+#p3 <- draw_bar(rezu[[3]]) + rezu[[2]]
+p3 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]
+xlsx3_1 <- rezu[[3]]
+
+rezu <- do_cluster(acoreList, kitimas_4, CGI2gene, allGenes, data.s, "cov_19")
+p4 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]
+xlsx4_1 <- rezu[[3]]
+
+#rezu <- do_cluster(acoreList, kitimas_5, CGI2gene, allGenes, data.s)
+#p5 <- draw_bar(rezu[[3]]) + rezu[[2]]
+
+#rezu <- do_cluster(acoreList, kitimas_6, CGI2gene, allGenes, data.s)
+#p6 <- draw_bar(rezu[[3]]) + rezu[[2]]
+
+rezu <- do_cluster(acoreList, kitimas_7, CGI2gene, allGenes, data.s, "cov_3.7.15")
+p7 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]
+xlsx7_1 <- rezu[[3]]
+
+rezu <- do_cluster(acoreList, kitimas_8, CGI2gene, allGenes, data.s, "cov_4.17")
+p8 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]
+xlsx8_1 <- rezu[[3]]
+
+
+(p1 | p2) / (p3 | p4) / (plot_spacer() | plot_spacer()) / (p7 | p8)
+```
+
+## CGI with RRBS
+
+Clusters used: 11, 8, 23, 20, 3, 17, 15
+```{r}
+do_mfuzz_RRBS <- function(regionai, padengimai, clusters, vardas) {
+  if(!file.exists(paste0(outdatadir, vardas, "_mfuzz.RDS"))) {
+    fo <- findOverlaps(regionai, padengimai)
+    d <- cbind(elementMetadata(CGI[queryHits(fo)])[, 'ID'], elementMetadata(RRBS_gr[subjectHits(fo)])[, c('A0D_met', 'A2D_met', 'A4D_met', 'A8D_met')]) %>% 
+      as.data.table() %>% 
+      setnames(., c("ID", "A0D_met", "A2D_met", "A4D_met", "A8D_met")) %>% 
+      .[, lapply(.SD, mean, na.rm=TRUE), by="ID"]
+    sel_counts <- d[, -1, with=FALSE] 
+    dd <- rbind(c(1, 2, 3, 4), as.matrix(sel_counts))
+    rownames(dd) <- c("time", d$ID)
+    colnames(dd) <- c("D0", "D2", "D4", "D8")
+    tmp <- tempfile()
+    write.table(dd, file=tmp, sep='\t', quote = F, col.names=NA)
+    data <- table2eset(file=tmp)
+    data.s <- standardise(data)
+    data.s <- data.s[rowSums(is.na(exprs(data.s)))==0] 
+    m1 <- mestimate(data.s)
+    set.seed(1987)
+    cx <- mfuzz(data.s, c=clusters, m=m1)
+    acore <- acore(data.s, cx, min.acore=0)
+    acore_list <- do.call(rbind, lapply(seq_along(acore), function(i){ data.frame(CLUSTER=i, acore[[i]])}))
+    saveRDS(list(m1=m1, dataS=data.s, acore=acore, acoreList=acore_list, cx=cx), paste0(outdatadir, vardas, "_mfuzz.RDS"))
+    return(list(m1=m1, dataS=data.s, acore=acore, acoreList=acore_list, cx=cx))
+  } else {
+    rez <- readRDS(paste0(outdatadir, vardas, "_mfuzz.RDS"))
+    return(list(m1=rez[["m1"]], dataS=rez[["dataS"]], acore=rez[["acore"]], acoreList=rez[["acoreList"]], cx=rez[["cx"]]))
+  }}
+
+
+do_cluster_RRBS <- function(acoreList, kitimas, CGI2gene, allGenes, data.s, vardas, allIDs=allIDS_KEGG) {
+  ID2sel <- acoreList %>% 
+    as.data.table() %>% 
+    #.[MEM.SHIP > 0.2, ] %>% 
+    .[CLUSTER %in% kitimas, NAME]
+
+  d2save <- exprs(data.s) %>% 
+    as.data.table(., keep.rownames=TRUE) %>% 
+    .[rn %in% ID2sel, ] %>% 
+    melt()
+
+  fig_prof <- d2save %>% 
+    ggplot(aes(variable, value, group=rn)) +
+      geom_line(alpha=0.5, lwd=0.5, colour="grey") +
+      theme_bw() +
+      xlab("Time") +
+      ylab("Normalized value") +
+      ggtitle(paste0("Genes used: ", length(ID2sel)))
+
+  gene2GO <- CGI2gene[featID %in% ID2sel, geneID] %>% unique
+
+  ego_all <- enrichGO(gene = unique(gene2GO),
+            universe = allGenes,
+            OrgDb = org.Mm.eg.db, 
+            readable = TRUE, 
+            pAdjustMethod = "BH",
+            keyType = "ENSEMBL", 
+            ont = "BP"
+                )
+  gene2GO <- CGI2gene[featID %in% ID2sel, geneID] %>% unique
+  ids <- bitr(gene2GO, fromType="ENSEMBL", toType=c("ENTREZID"), OrgDb="org.Mm.eg.db")
+  KEGG_all <- enrichKEGG(gene = unique(ids$ENTREZID),
+            keyType = "ncbi-geneid", 
+            universe = allIDs$ENTREZID,
+            organism = "mmu"
+                )       
+  saveRDS(list(genes2do=gene2GO, profiliui=d2save, GO=ego_all, ID=ID2sel), paste0(outdatadir, vardas, ".RDS"))                
+return(list(genes2do=gene2GO, fig_prof=fig_prof, GO=ego_all, KEGG=KEGG_all))}
+
+
+
+rez <- do_mfuzz_RRBS(CGI, RRBS_gr, 24, "RRBS")
+m1 <- rez[["m1"]]
+data.s <- rez[["dataS"]]
+acore <- rez[["acore"]]
+acoreList <- rez[["acoreList"]]
+cx <- rez[["cx"]]
+pdf(paste0(outdatadir, "RRBS_24clusters.pdf"), width=20, height=20)
+mfuzz.plot(data.s, cl=cx, mfrow=c(9, 11), time.labels=c("D0","D2", "D4", "D8"), new.window=FALSE)
+dev.off()
+
+#mfuzz.plot(data.s, cl=cx, mfrow=c(8, 8), time.labels=c("D0","D2", "D4", "D8"), new.window=FALSE)
+
+kitimas_1 <- c(11)
+kitimas_2 <- c()
+kitimas_3 <- c(8)
+kitimas_4 <- c(23)
+kitimas_5 <- c(20)
+kitimas_6 <- c(3)
+kitimas_7 <- c(17)
+kitimas_8 <- c(15)
+```
+
+```{r, fig.height=25, fig.width=18}
+rezu <- do_cluster_RRBS(acoreList, kitimas_1, CGI2gene, allGenes, data.s, "RRBS_11")
+p1 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]
+xlsx1_2 <- rezu[[3]]
+
+#rezu <- do_cluster_RRBS(acoreList, kitimas_2, CGI2gene, allGenes, data.s)
+#p2 <- draw_bar(rezu[[3]]) + rezu[[2]]
+
+rezu <- do_cluster_RRBS(acoreList, kitimas_3, CGI2gene, allGenes, data.s, "RRBS_8")
+p3 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]
+xlsx3_2 <- rezu[[3]]
+
+rezu <- do_cluster_RRBS(acoreList, kitimas_4, CGI2gene, allGenes, data.s, "RRBS_23")
+p4 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]
+#p4 <- draw_bar(rezu[[3]]) + rezu[[2]]
+xlsx4_2 <- rezu[[3]]
+
+rezu <- do_cluster_RRBS(acoreList, kitimas_5, CGI2gene, allGenes, data.s, "RRBS_20")
+p5 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]
+xlsx5_2 <- rezu[[3]]
+
+rezu <- do_cluster_RRBS(acoreList, kitimas_6, CGI2gene, allGenes, data.s, "RRBS_3")
+p6 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]
+xlsx6_2 <- rezu[[3]]
+
+
+rezu <- do_cluster_RRBS(acoreList, kitimas_7, CGI2gene, allGenes, data.s, "RRBS_17")
+p7 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]
+xlsx7_2 <- rezu[[3]]
+
+rezu <- do_cluster_RRBS(acoreList, kitimas_8, CGI2gene, allGenes, data.s, "RRBS_15")
+p8 <- draw_bar(rezu[[3]]) + draw_KEGG_bar(rezu[[4]]) + rezu[[2]]
+xlsx8_2 <- rezu[[3]]
+
+
+(p1 | plot_spacer()) / (p3 | p4) / (p5 | p6) / (p7 | p8)
+
+```
+
+
+## RRBS using CGI targets clusters
+
+Čia imti klasteriai padaryti pagal Dnmt-seq (pirmas tab'as), bet nupieštas RRBS signalas. Enrichment nedaryta aišku :) 
+
+piešta po du (t.y. Dnmt-seq ir RRBS )
+
+```{r, fig.height=8, fig.width=18}
+rez <- do_mfuzz(CGI, coveragesOnly1_gr, 24, "CGI_targNo")
+acoreList_Dnmt <- rez[["acoreList"]]
+
+rez <- do_mfuzz_RRBS(CGI, RRBS_gr, 24, "RRBS")
+data.sRRBS <- rez[["dataS"]]
+
+
+kitimas_1 <- c(13)
+kitimas_2 <- c(6, 7, 2, 25)
+kitimas_3 <- c(1)
+kitimas_4 <- c(15)
+kitimas_5 <- c(10)
+kitimas_6 <- c(12)
+kitimas_8 <- c(14)
+
+do_cluster_mix <- function(acoreList_DnmtSeq, kitimas, data.s.RRBS) {
+ ID2sel <- acoreList_DnmtSeq %>% 
+    as.data.table() %>% 
+    .[CLUSTER %in% kitimas, NAME]
+
+   d2save <- exprs(data.s.RRBS) %>% 
+    as.data.table(., keep.rownames=TRUE) %>% 
+    .[rn %in% ID2sel, ] %>% 
+    melt()
+
+  fig_prof <- d2save %>% 
+    ggplot(aes(variable, value, group=rn)) +
+      geom_line(alpha=0.25, lwd=0.5, colour="grey") +
+      theme_bw() +
+      xlab("Time") +
+      ylab("Normalized value") +
+      ggtitle(paste0("Genes used: ", length(ID2sel))) 
+  return(fig_prof)        
+}
+
+p1 <- do_cluster_mix(acoreList_Dnmt, kitimas_1, data.sRRBS)
+p2 <- do_cluster_mix(acoreList_Dnmt, kitimas_2, data.sRRBS)
+p3 <- do_cluster_mix(acoreList_Dnmt, kitimas_3, data.sRRBS)
+p4 <- do_cluster_mix(acoreList_Dnmt, kitimas_4, data.sRRBS)
+p5 <- do_cluster_mix(acoreList_Dnmt, kitimas_5, data.sRRBS)
+p6 <- do_cluster_mix(acoreList_Dnmt, kitimas_6, data.sRRBS)
+p8 <- do_cluster_mix(acoreList_Dnmt, kitimas_8, data.sRRBS)
+
+
+(p1A | p1 | plot_spacer() | p2A | p2| plot_spacer() | p3A | p3| plot_spacer()) / 
+(p4A | p4| plot_spacer() | p5A | p5| plot_spacer() | p6A | p6| plot_spacer()) / 
+(p8A | p8| plot_spacer() | plot_spacer() | plot_spacer() | plot_spacer() | plot_spacer() | plot_spacer() | plot_spacer() )
+```
+
+
+## Excels to download
+
+GO enrichment excel files:
+
+[CGI target number](../..//CGI_targetNo.xlsx)
+
+[CGI coverage](../..//CGI_coverage.xlsx)
+
+[CGI RRBS](../..//CGI_RRBS.xlsx)
+
+
+```{r}
+write.xlsx(xlsx_1, 
+           paste0("report/out_html/", "CGI_targetNo.xlsx"), 
+           sheetName="Cluster13",
+           append=FALSE)
+
+write.xlsx(xlsx_2, 
+           paste0("report/out_html/", "CGI_targetNo.xlsx"), 
+           sheetName="Cluster6ir7ir5ir25",
+           append=TRUE)
+
+write.xlsx(xlsx_3, 
+           paste0("report/out_html/", "CGI_targetNo.xlsx"), 
+           sheetName="Cluster1",
+           append=TRUE)
+
+write.xlsx(xlsx_4, 
+           paste0("report/out_html/", "CGI_targetNo.xlsx"), 
+           sheetName="Cluster15",
+           append=TRUE)
+
+write.xlsx(xlsx_5, 
+           paste0("report/out_html/", "CGI_targetNo.xlsx"), 
+           sheetName="Cluster10",
+           append=TRUE)
+
+write.xlsx(xlsx_6, 
+           paste0("report/out_html/", "CGI_targetNo.xlsx"), 
+           sheetName="Cluster12",
+           append=TRUE)
+
+#write.xlsx(xlsx_7, 
+#           paste0("report/out_html/", "CGI_targetNo.xlsx"), 
+#           sheetName="Cluster5ir25",
+#           append=TRUE)
+
+write.xlsx(xlsx_8, 
+           paste0("report/out_html/", "CGI_targetNo.xlsx"), 
+           sheetName="Cluster14",
+           append=TRUE)
+
+#####################################
+
+write.xlsx(xlsx1_1, 
+           paste0("report/out_html/", "CGI_coverage.xlsx"), 
+           sheetName="Cluster25",
+           append=FALSE)
+
+write.xlsx(xlsx2_1, 
+           paste0("report/out_html/", "CGI_coverage.xlsx"), 
+           sheetName="Cluster8ir22",
+           append=TRUE)
+
+write.xlsx(xlsx3_1, 
+           paste0("report/out_html/", "CGI_coverage.xlsx"), 
+           sheetName="Cluster10ir13",
+           append=TRUE)
+
+write.xlsx(xlsx4_1, 
+           paste0("report/out_html/", "CGI_coverage.xlsx"), 
+           sheetName="Cluster19",
+           append=TRUE)
+
+write.xlsx(xlsx7_1, 
+           paste0("report/out_html/", "CGI_coverage.xlsx"), 
+           sheetName="Cluster3ir7ir15",
+           append=TRUE)
+
+write.xlsx(xlsx8_1, 
+           paste0("report/out_html/", "CGI_coverage.xlsx"), 
+           sheetName="Cluster4ir17",
+           append=TRUE)
+
+#####################################
+
+
+write.xlsx(xlsx1_2, 
+           paste0("report/out_html/", "CGI_RRBS.xlsx"), 
+           sheetName="Cluster1",
+           append=FALSE)
+
+write.xlsx(xlsx3_2, 
+           paste0("report/out_html/", "CGI_RRBS.xlsx"), 
+           sheetName="Cluster8",
+           append=TRUE)
+
+write.xlsx(xlsx4_2, 
+           paste0("report/out_html/", "CGI_RRBS.xlsx"), 
+           sheetName="Cluster26",
+           append=TRUE)
+
+write.xlsx(xlsx5_2, 
+           paste0("report/out_html/", "CGI_RRBS.xlsx"), 
+           sheetName="Cluster20",
+           append=TRUE)
+
+write.xlsx(xlsx6_2, 
+           paste0("report/out_html/", "CGI_RRBS.xlsx"), 
+           sheetName="Cluster3",
+           append=TRUE)
+
+write.xlsx(xlsx7_2, 
+           paste0("report/out_html/", "CGI_RRBS.xlsx"), 
+           sheetName="Cluster17",
+           append=TRUE)
+
+#write.xlsx(xlsx8_2, 
+#           paste0("report/out_html/", "CGI_RRBS.xlsx"), 
+#           sheetName="Cluster15",
+#           append=TRUE)
+
+```

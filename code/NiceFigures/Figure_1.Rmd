@@ -1,0 +1,663 @@
+```{r}
+library(pacman)
+p_load(data.table, dplyr, ggplot2, ComplexHeatmap, gridSVG, circlize, viridis, RColorBrewer, GenomicRanges, EnrichedHeatmap, rtracklayer, ComplexHeatmap, patchwork) 
+knitr::opts_chunk$set(dev='gridSVG', res=300, fig.height=4, fig.width=4, fig.align = "center")
+options(scipen=999)
+dir.create(outdatadir, recursive=TRUE)
+source("code/common.R")
+met_samples <- c("WGBS_WT_met", "WGBS_hetero_met", "WGBS_homo_met", "WGBS_KO_met")
+rrbs_samples <- c("RRBS_homo_met", "RRBS_hetero_met")
+
+tmp <- readRDS(paste0("output/code/PrepAllData/WGBS_vs_RRBS_data.RDS"))
+meth <- tmp[["methylation_gr_th"]] %>% as.data.table() %>% 
+  .[, `:=` (seqnames = NULL, start = NULL, end = NULL, width = NULL, strand = NULL)]
+meth_gr <- tmp[["methylation_gr_th"]] 
+meth_gr_full <- tmp[["methylation_gr_full"]]
+```
+
+# Figures {.tabset}
+
+
+## Correlations
+
+```{r, fig.width=4, fig.height=4, eval=TRUE}
+d <- readRDS("output/code/WGBS_RRBS/WGBS_Stat/bins2kb_CorScat.RDS")
+binai_meth <- d[["binai"]]
+binai_cov <- d[["binai_cov"]]
+
+tmp <- binai_meth[, met_samples, with=FALSE]
+tmp <- tmp[!is.na(rowSums(tmp))]
+
+coru <- cor(tmp)
+colnames(coru) <- colnames(coru) %>% strsplit(., "_") %>% sapply(., `[`, 2)
+rownames(coru) <- rownames(coru) %>% strsplit(., "_") %>% sapply(., `[`, 2)
+
+ha = HeatmapAnnotation(
+    sample = colnames(coru),
+    col = list(sample = c("WT" = "#000000", 
+                    "hetero" = "#FF0000", 
+                    "homo"   = "#008000",
+                     "KO"    = "#606060"
+              ),
+    annotation_legend_param = list(
+        annotation_name_gp = gpar(fontsize = 12),
+        annotation_labels_gp = gpar(fontsize = 12),
+        sample = list(nrow = 1, 
+                      direction = "horizontal"))
+              ),
+    show_legend = c(FALSE)     
+)
+
+row_ha = rowAnnotation(
+    sample = rownames(coru),
+    col = list(sample = c("WT" = "#000000", 
+                    "hetero" = "#FF0000", 
+                    "homo"   = "#008000",
+                     "KO"    = "#606060"
+              ),
+    axis_param=list(gp=gpar(fontsize = 12)),           
+    annotation_legend_param = list(
+        name_gp = gpar(fontsize = 12),
+        labels_gp = gpar(fontsize = 12),
+        sample = list(nrow = 1, 
+                      direction = "horizontal"))
+)
+)
+
+col_fun = colorRamp2(c(0, 0.5, 1),viridis(3))
+
+ht <- Heatmap(coru,
+        name = "pearson", 
+        top_annotation = ha, 
+        right_annotation = row_ha,
+        col = col_fun, 
+        cluster_columns = FALSE,
+        cluster_rows = FALSE,
+        rect_gp = gpar(col = "black", lwd = 1), 
+        heatmap_legend_param = list(direction = "horizontal", 
+                                    annotation_name_gp = gpar(fontsize = 12),
+                                    annotation_labels_gp = gpar(fontsize = 12),
+                                    labels_gp = gpar(fontsize = 12)),
+        cell_fun = function(j, i, x, y, width, height, fill) {
+            grid.text(sprintf("%.2f", coru[i, j]), x, y, gp = gpar(fontsize = 12))},
+        border = TRUE    
+    )
+
+draw(ht, 
+     annotation_legend_side = "right", 
+     heatmap_legend_side = "bottom" )
+```
+
+
+PCA  
+
+```{r, fig.width=4, fig.height=4, eval=TRUE}
+tmp <- binai_meth[, met_samples, with=FALSE]
+tmp <- tmp[!is.na(rowSums(tmp))]
+pca <-  tmp %>% t %>% prcomp()
+summ <- summary(pca)
+p <- pca$x %>% 
+  as.data.table(., keep.rownames=TRUE) %>% 
+  .[, sample := strsplit(rn, "_") %>% sapply(., `[`, 2)] %>% 
+  ggplot(aes(PC1, PC2, colour=sample)) +
+      geom_point(size=5) +
+      theme_Publication() +
+      theme_bw() +
+      theme(legend.position="bottom") +
+      xlab(paste0("PC 1: ", round(summ$importance[2,1]*100), "%")) +
+      ylab(paste0("PC 2: ", round(summ$importance[2,2]*100), "%")) +
+      scale_colour_manual(values = cols_samplesLong, breaks = c("WT", "hetero", "homo", "KO")) +
+      guides(colour=guide_legend(nrow=2,byrow=TRUE))
+p   
+```
+```{r, fig.width=4, fig.height=4, eval=TRUE}
+p1 <- meth %>%
+  .[!is.na(WGBS_WT_met + WGBS_hetero_met), ]  %>% 
+  ggplot(aes(y=WGBS_WT_met, x=WGBS_hetero_met) ) +
+    stat_density_2d(aes(fill = after_stat(density)), geom = "raster", contour = FALSE, adjust = 5) +
+    scale_fill_distiller(palette= "RdYlBu", direction=-1) +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_Publication() +
+    theme(
+      legend.position='bottom',
+      legend.key.width = unit(1, "cm")
+    ) +
+    ylab("WT") +
+    xlab("hetero")
+```
+
+```{r, fig.width=4, fig.height=4, eval=TRUE}
+p2 <- meth %>%
+  .[!is.na(WGBS_WT_met + WGBS_homo_met), ]  %>% 
+  ggplot(aes(y=WGBS_WT_met, x=WGBS_homo_met) ) +
+    stat_density_2d(aes(fill = after_stat(density)), geom = "raster", contour = FALSE, adjust = 5) +
+    scale_fill_distiller(palette= "RdYlBu", direction=-1) +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_Publication() +
+    theme(
+      legend.position='bottom',
+      legend.key.width = unit(1, "cm")
+    ) +
+    ylab("WT") +
+    xlab("homo")
+```
+
+```{r, fig.width=4, fig.height=4, eval=TRUE}
+p3 <- meth %>%
+  .[!is.na(WGBS_WT_met + WGBS_KO_met), ]  %>% 
+  ggplot(aes(y=WGBS_WT_met, x=WGBS_KO_met) ) +
+    stat_density_2d(aes(fill = after_stat(density)), geom = "raster", contour = FALSE, adjust = 5) +
+    scale_fill_distiller(palette= "RdYlBu", direction=-1) +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_Publication() +
+    theme(
+      legend.position='bottom',
+      legend.key.width = unit(1, "cm")
+    ) +
+    ylab("WT") +
+    xlab("KO")
+```
+
+```{r, fig.width=4, fig.height=4, eval=TRUE}
+p4 <- meth %>%
+  .[!is.na(WGBS_homo_met + WGBS_KO_met), ]  %>% 
+  ggplot(aes(y=WGBS_homo_met, x=WGBS_KO_met) ) +
+    stat_density_2d(aes(fill = after_stat(density)), geom = "raster", contour = FALSE, adjust = 5) +
+    scale_fill_distiller(palette= "RdYlBu", direction=-1) +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_Publication() +
+    theme(
+      legend.position='bottom',
+      legend.key.width = unit(1, "cm")
+    ) +
+    ylab("homo") +
+    xlab("KO")
+```
+
+```{r, fig.width=8, fig.height=8, eval=TRUE}
+(p1 | p2) / (p3 | p4)
+gc()
+
+```
+
+## Methylation
+
+CG level 
+
+```{r, fig.height=6, fig.width=6, eval=TRUE}
+meth %>% 
+  .[, met_samples, with=FALSE] %>% 
+  melt() %>% 
+  .[, variable := gsub("_met", "", variable) %>% gsub("WGBS_", "", .) %>% factor(., levels=c("WT", "hetero", "homo", "KO"))] %>% 
+  ggplot(aes(x=value, fill=variable)) +
+    geom_density(key_glyph = "rect", alpha=1) +
+    theme_bw() +
+    xlab("methylation") +
+    facet_wrap(~variable) +
+    scale_fill_manual(values = cols_samplesLong, breaks = c("WT", "hetero", "homo", "KO")) +
+    guides(colour = guide_legend(override.aes = list(alpha = 1)), fill = guide_legend(override.aes = list(alpha = 1))) +
+    theme_Publication() +
+    theme(legend.position="bottom")  +
+    guides(fill=guide_legend(title="sample"))
+```
+
+```{r, fig.height=3, fig.width=3, eval=TRUE}
+meth %>% 
+  .[, met_samples, with=FALSE] %>% 
+  melt() %>% 
+  .[, variable := gsub("_met", "", variable) %>% gsub("WGBS_", "", .) %>% factor(., levels=c("WT", "hetero", "homo", "KO"))] %>% 
+  .[, sample := variable] %>% 
+  .[, alfas := "A"] %>% 
+  .[sample == "WT", alfas := "B"] %>% 
+  ggplot(aes(x=value, fill=sample, alpha=alfas)) +
+    geom_density(key_glyph = "rect") +
+    theme_bw() +
+    xlab("methylation") +
+    scale_fill_manual(values = cols_samplesLong, breaks = c("WT", "hetero", "homo", "KO")) +
+    theme_Publication() +
+    theme(legend.position="bottom")  +
+    guides(  fill = guide_legend(override.aes = list(alpha = 1)), 
+             fill = guide_legend(title="sample"), 
+             alpha="none"
+             ) +
+    scale_alpha_discrete(range = c(0.5, 0.9))     
+
+p <- meth %>% 
+  .[, met_samples, with=FALSE] %>% 
+  melt() %>% 
+  .[, variable := gsub("_met", "", variable) %>% gsub("WGBS_", "", .) %>% factor(., levels=c("WT", "hetero", "homo", "KO"))] %>% 
+  .[, sample := variable] %>% 
+  .[, alfas := "A"] %>% 
+  .[sample == "WT", alfas := "B"] %>% 
+  ggplot(aes(x=value, fill=sample, alpha=alfas)) +
+    geom_density(key_glyph = "rect") +
+    theme_bw() +
+    xlab("methylation") +
+    scale_fill_manual(values = cols_samplesLong, breaks = c("WT", "hetero", "homo", "KO")) +
+    theme_Publication() +
+    theme(legend.position="bottom")  +
+    guides(  fill = guide_legend(override.aes = list(alpha = 1)), 
+             fill = guide_legend(title="sample"), 
+             alpha="none"
+             ) +
+    scale_alpha_discrete(range = c(0.5, 0.9))
+
+p 
+```
+
+```{r, fig.width=8, eval=TRUE}
+tmp <- meth %>% 
+  .[, chr := strsplit(ID, "_") %>% sapply(., `[`, 1)] %>% 
+  .[, chr_type := "autosome"] %>% 
+  .[grepl("X|Y", chr), chr_type := "sex"] %>% 
+  .[, c(met_samples, "chr_type"), with=FALSE] 
+
+colnames(tmp) <- gsub("WGBS_", "", colnames(tmp)) %>% gsub("_met", "", .)
+
+tmp <- tmp[!is.na(rowSums(tmp[, 1:4 ]))]
+
+tmp %>%
+  melt(., id.vars=c("chr_type")) %>% 
+  as.data.table() %>% 
+  setnames(., c("chr_type", "sample", "value")) %>% 
+  .[, sample := factor(sample, levels=c("WT", "hetero", "homo", "KO"))] %>% 
+  ggplot(aes(chr_type, value, colour=sample, fill=sample)) +
+    geom_violin(position=position_dodge(0.75)) +
+    geom_boxplot(width=0.01, outlier.shape=NA, colour="white", position=position_dodge(0.75), key_glyph = "rect") +
+    stat_summary(aes(colour=sample, fill=sample), fun=mean, geom='point', shape=20, size=6, colour="white", key_glyph = "rect", position = position_dodge(width = 0.75)) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+    scale_fill_manual(values = cols_samplesLong, breaks = c("WT", "hetero", "homo", "KO")) +
+    scale_colour_manual(values = cols_samplesLong, breaks = c("WT", "hetero", "homo", "KO")) +
+    ylab("methylation") +
+    theme_Publication() +
+    theme(axis.title.x=element_blank(), legend.position="bottom") 
+```
+
+Variantas, kai viskas kartu:
+
+```{r, fig.width=4, eval=TRUE}
+tmp %>%
+  melt(., id.vars=c("chr_type")) %>% 
+  as.data.table() %>% 
+  setnames(., c("chr_type", "sample", "value")) %>% 
+  .[, sample := factor(sample, levels=c("WT", "hetero", "homo", "KO"))] %>% 
+  ggplot(aes(sample, value, colour=sample, fill=sample)) +
+    geom_violin(position=position_dodge(0.75), key_glyph = "rect") +
+    geom_boxplot(width=0.01, outlier.shape=NA, colour="white", position=position_dodge(0.75), key_glyph = "rect") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+    scale_fill_manual(values = cols_samplesLong, breaks = c("WT", "hetero", "homo", "KO")) +
+    scale_colour_manual(values = cols_samplesLong, breaks = c("WT", "hetero", "homo", "KO")) +
+    ylab("methylation") +
+    theme_Publication() +
+    theme(axis.title.x=element_blank(), legend.position="bottom")  +
+    stat_summary(fun=mean, geom='point', shape=20, size=6, colour="white", key_glyph = "rect")
+```
+
+
+
+```{r}
+d <- readRDS("output/code/WGBS_RRBS/WGBS_Stat/TotalMethylationCov5.RDS")
+p1 <- d %>% 
+  .[grep("WGBS", variable), ] %>% 
+  .[, variable := gsub("WGBS_", "", variable)] %>% 
+  .[, variable := factor(variable, levels=cols_order)] %>% 
+ggplot(aes(variable, value, fill=variable)) +
+      geom_col() +
+      theme_bw() +
+      ylab("methylation") +
+      theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), 
+            axis.title.x=element_blank()) +
+      scale_y_continuous(labels = scales::percent, breaks=seq(0, 0.8, by=0.1))  +
+      scale_fill_manual(values = cols_samplesLong) +
+      labs(fill="sample", subtitle="all CG")  +
+      coord_cartesian(ylim=c(0, 0.8)) +
+      theme_Publication() +
+      theme(legend.position="bottom", axis.title.x=element_blank()) +
+      guides(colour=guide_legend(nrow=2,byrow=TRUE))                 
+```
+
+
+
+```{r}
+d <- readRDS("output/code/WGBS_RRBS/WGBS_Stat/TotalMethylationCov5_onlyCGI.RDS")
+p2 <- d %>% 
+  .[grep("WGBS", variable), ] %>% 
+  .[, variable := gsub("WGBS_", "", variable)] %>% 
+  .[, variable := factor(variable, levels=cols_order)] %>% 
+ggplot(aes(variable, value, fill=variable)) +
+      geom_col() +
+      theme_bw() +
+      ylab("methylation") +
+      theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), 
+            axis.title.x=element_blank()) +
+      scale_y_continuous(labels = scales::percent)  +
+      scale_fill_manual(values = cols_samplesLong) +
+      labs(fill="sample", subtitle="CGI")  +
+      theme_Publication() +
+      theme(legend.position="bottom", axis.title.x=element_blank()) +
+      guides(colour=guide_legend(nrow=2,byrow=TRUE))      
+```
+
+
+
+```{r}
+d <- readRDS("output/code/WGBS_RRBS/WGBS_Stat/TotalMethylationCov5_onlyNotCGI.RDS")
+p3 <- d %>% 
+  .[grep("WGBS", variable), ] %>% 
+  .[, variable := gsub("WGBS_", "", variable)] %>% 
+  .[, variable := factor(variable, levels=cols_order)] %>% 
+ggplot(aes(variable, value, fill=variable)) +
+      geom_col() +
+      theme_bw() +
+      ylab("methylation") +
+      theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), 
+            axis.title.x=element_blank()) +
+      scale_y_continuous(labels = scales::percent, breaks=seq(0, 0.8, by=0.1))  +
+      scale_fill_manual(values = cols_samplesLong) +
+      coord_cartesian(ylim=c(0, 0.8)) +
+      labs(fill="sample", subtitle="nonCGI")  +
+      theme_Publication() +
+      theme(legend.position="bottom", axis.title.x=element_blank()) +
+      guides(colour=guide_legend(nrow=2,byrow=TRUE)) 
+```
+
+```{r}
+d <- readRDS("output/code/WGBS_RRBS/WGBS_Stat/TotalMethylationCov5.RDS")
+p4 <- d %>% 
+  .[grep("RRBS", variable), ] %>% 
+  .[, variable := gsub("RRBS_", "", variable)] %>% 
+  .[, variable := factor(variable, levels=cols_order)] %>% 
+ggplot(aes(variable, value, fill=variable)) +
+      geom_col() +
+      theme_bw() +
+      ylab("methylation") +
+      theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), 
+            axis.title.x=element_blank()) +
+      scale_y_continuous(labels = scales::percent)  +
+      scale_fill_manual(values = cols_samplesLong) +
+      labs(fill="sample", subtitle="all CG")  +
+      theme_Publication() +
+      theme(legend.position="bottom", axis.title.x=element_blank())           
+```
+
+```{r, eval=TRUE}
+d <- readRDS("output/code/WGBS_RRBS/WGBS_Stat/TotalMethylationCov5_onlyCGI.RDS")
+p5 <- d %>% 
+  .[grep("RRBS", variable), ] %>% 
+  .[, variable := gsub("RRBS_", "", variable)] %>% 
+  .[, variable := factor(variable, levels=cols_order)] %>% 
+ggplot(aes(variable, value, fill=variable)) +
+      geom_col() +
+      theme_bw() +
+      ylab("methylation") +
+      theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), 
+            axis.title.x=element_blank()) +
+      scale_y_continuous(labels = scales::percent)  +
+      scale_fill_manual(values = cols_samplesLong) +
+      labs(fill="sample", subtitle="CGI")  +
+      theme_Publication() +
+      theme(legend.position="bottom", axis.title.x=element_blank())          
+```
+
+
+```{r, eval=TRUE}
+d <- readRDS("output/code/WGBS_RRBS/WGBS_Stat/TotalMethylationCov5_onlyNotCGI.RDS")
+p6 <- d %>% 
+  .[grep("RRBS_", variable), ] %>% 
+  .[, variable := gsub("RRBS_", "", variable)] %>% 
+  .[, variable := factor(variable, levels=cols_order)] %>% 
+ggplot(aes(variable, value, fill=variable)) +
+      geom_col() +
+      theme_bw() +
+      ylab("methylation") +
+      theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), 
+            axis.title.x=element_blank()) +
+      scale_y_continuous(labels = scales::percent)  +
+      scale_fill_manual(values = cols_samplesLong) +
+      labs(fill="sample", subtitle="Non CGI")  +
+      theme_Publication() +
+      theme(legend.position="bottom", axis.title.x=element_blank())          
+```
+
+```{r, fig.width=9}
+p <- (p1 | p2 | p3) / (p4 | p5 | p6) + plot_layout(guides = "collect") & theme(legend.position = 'bottom')
+p
+```
+
+
+
+## Methylation groups 
+
+```{r, eval=TRUE}
+tmp <- rbind(
+  as.data.table(add_gr_1(meth$WGBS_KO_met)) %>% 
+    .[, sample := "KO"], 
+  as.data.table(add_gr_1(meth$WGBS_WT_met)) %>% 
+    .[, sample := "WT"], 
+  as.data.table(add_gr_1(meth$WGBS_hetero_met)) %>% 
+    .[, sample := "hetero"],   
+  as.data.table(add_gr_1(meth$WGBS_homo_met)) %>% 
+    .[, sample := "homo"]) %>% 
+  as.data.table() %>% 
+  setnames(".", "group")
+
+tmp %>% 
+  .[, group := factor(group, levels=rev(c("lowCov", "0-20", "20-80", "80-100")))] %>% 
+  .[, sample := factor(sample, levels=c("WT", "hetero", "homo", "KO"))] %>% 
+  ggplot(aes(sample, N, fill=group)) +
+    geom_col(position="stack") +
+    scale_fill_brewer(palette="Set1", name="Methylation") +
+    theme_Publication() +
+    theme(legend.position="bottom", axis.title=element_blank()) +
+    scale_y_continuous(labels = scales::percent) +
+    guides(fill=guide_legend(nrow=2,byrow=TRUE))           
+```
+
+
+
+```{r, eval=TRUE}
+tmp <- rbind(
+  as.data.table(add_gr_1_noNA(meth$WGBS_KO_met)) %>% 
+    .[, sample := "KO"], 
+  as.data.table(add_gr_1_noNA(meth$WGBS_WT_met)) %>% 
+    .[, sample := "WT"], 
+  as.data.table(add_gr_1_noNA(meth$WGBS_hetero_met)) %>% 
+    .[, sample := "hetero"],   
+  as.data.table(add_gr_1_noNA(meth$WGBS_homo_met)) %>% 
+    .[, sample := "homo"]) %>% 
+  as.data.table() %>% 
+  setnames(".", "group")
+
+tmp %>% 
+  .[, group := factor(group, levels=rev(c("0-20", "20-80", "80-100")))] %>% 
+  .[, sample := factor(sample, levels=c("WT", "hetero", "homo", "KO"))] %>% 
+  ggplot(aes(sample, N, fill=group)) +
+    geom_col(position="stack") +
+    scale_fill_brewer(palette="Set1", name="Methylation") +
+    theme_Publication() +
+    theme(legend.position="bottom", axis.title=element_blank()) +
+    scale_y_continuous(labels = scales::percent) +
+    guides(fill=guide_legend(nrow=2,byrow=TRUE))           
+```
+
+```{r, eval=TRUE}
+tmp <- rbind(
+  as.data.table(add_gr_2(meth$WGBS_KO_met)) %>% 
+    .[, sample := "KO"], 
+  as.data.table(add_gr_2(meth$WGBS_WT_met)) %>% 
+    .[, sample := "WT"], 
+  as.data.table(add_gr_2(meth$WGBS_hetero_met)) %>% 
+    .[, sample := "hetero"],   
+  as.data.table(add_gr_2(meth$WGBS_homo_met)) %>% 
+    .[, sample := "homo"]) %>% 
+  as.data.table() %>% 
+  setnames(".", "group")
+
+tmp %>% 
+  .[, group := factor(group, levels=rev(c("lowCov", "0-10", "10-50", "50-100")))] %>% 
+  .[, sample := factor(sample, levels=c("WT", "hetero", "homo", "KO"))] %>% 
+  ggplot(aes(sample, N, fill=group)) +
+    geom_col(position="stack") +
+    scale_fill_brewer(palette="Set1", name="Methylation") +
+    theme_Publication() +
+    theme(legend.position="bottom", axis.title=element_blank()) +
+    scale_y_continuous(labels = scales::percent)  +
+    guides(fill=guide_legend(nrow=2,byrow=TRUE))           
+```
+
+```{r, eval=TRUE}
+tmp <- rbind(
+  as.data.table(add_gr_2_noNA(meth$WGBS_KO_met)) %>% 
+    .[, sample := "KO"], 
+  as.data.table(add_gr_2_noNA(meth$WGBS_WT_met)) %>% 
+    .[, sample := "WT"], 
+  as.data.table(add_gr_2_noNA(meth$WGBS_hetero_met)) %>% 
+    .[, sample := "hetero"],   
+  as.data.table(add_gr_2_noNA(meth$WGBS_homo_met)) %>% 
+    .[, sample := "homo"]) %>% 
+  as.data.table() %>% 
+  setnames(".", "group")
+
+tmp %>% 
+  .[, group := factor(group, levels=rev(c("0-10", "10-50", "50-100")))] %>% 
+  .[, sample := factor(sample, levels=c("WT", "hetero", "homo", "KO"))] %>% 
+  ggplot(aes(sample, N, fill=group)) +
+    geom_col(position="stack") +
+    scale_fill_brewer(palette="Set1", name="Methylation") +
+    theme_Publication() +
+    theme(legend.position="bottom", axis.title=element_blank()) +
+    scale_y_continuous(labels = scales::percent) +
+    guides(fill=guide_legend(nrow=2,byrow=TRUE))           
+gc()
+
+```
+
+## TOP CGI
+
+```{r}
+tmp <- readRDS(paste0("output/code/PrepAllData//dAnnotations.RDS"))
+repeatai <- tmp[["repeatai"]]
+mcols(repeatai)$type <- paste0(mcols(repeatai)$Name, "_", mcols(repeatai)$Class, "_", mcols(repeatai)$Familly)
+annotations <- tmp[["anotacijos"]]
+anotacijos <- c(annotations, repeatai)
+
+CGI <- annotations[mcols(annotations)$type == "mm10_cpg_islands"]
+gene_style_features <- c(annotations[mcols(annotations)$type == "mm10_genes_3UTRs"], 
+                         annotations[mcols(annotations)$type == "mm10_genes_5UTRs"], 
+                         annotations[mcols(annotations)$type == "mm10_genes_cds"], 
+                         annotations[mcols(annotations)$type == "mm10_genes_exons"], 
+                         annotations[mcols(annotations)$type == "mm10_genes_introns"], 
+                         annotations[mcols(annotations)$type == "mm10_proteinCoding"]
+) %>% reduce()
+
+mcols(CGI)$type[countOverlaps(CGI, gene_style_features) > 0 ] <- "genes"
+mcols(CGI)$type[countOverlaps(CGI, gene_style_features) == 0 ] <- "intergenic"
+mcols(CGI)$type[countOverlaps(CGI, annotations[mcols(annotations)$type == "mm10_EPDpromoters"]) > 0] <- "promoter" 
+
+fo <- findOverlaps(CGI, meth_gr)
+CGI_met <- cbind(CGI[queryHits(fo)] %>% as.data.table() %>% .[, .(type, id)], 
+      meth_gr[subjectHits(fo)] %>% as.data.table() %>% .[, c(met_samples, "ID"), with=FALSE]) %>% 
+      .[, c(met_samples, "id"), with=FALSE] %>% 
+      .[, lapply(.SD, mean, na.rm=TRUE), by="id"]
+
+CGI2do <- data.table(CGI_met$id, rowMeans(CGI_met[, met_samples, with=FALSE])) %>% 
+  setkey(., V2) %>% 
+  tail(.,  2000) %>% 
+  .[, V1]
+       
+tmp <- CGI_met[id %in% CGI2do, ] %>% 
+  merge(., (CGI %>% as.data.table() %>% .[, .(id, type)])) %>% 
+  .[]
+```
+
+```{r, fig.width=8, fig.height=7.5, res=350, dev="png", eval=TRUE}
+samp_level = c("WT", "hetero", "homo", "KO")
+
+col_fun = colorRamp2(c(0, 50, 100),viridis(3))
+col_elem = structure(brewer.pal(n=3, "Dark2"), names=c("genes", "intergenic", "promoter"))
+
+d2plot <-  tmp[, c(met_samples, "type"), with=FALSE]
+colnames(d2plot) <- gsub("WGBS_", "", colnames(d2plot)) %>% gsub("_met", "", .)
+
+ha = HeatmapAnnotation(
+    sample = colnames(d2plot[, gsub("WGBS_|_met", "", met_samples), with=FALSE]),
+    col = list(sample = cols_samplesLong,
+    annotation_legend_param = list(
+        sample = list(direction = "horizontal", 
+                      at = samp_level,
+                      nrow = 1)
+              )       )
+)
+
+ht <- Heatmap(d2plot[, gsub("WGBS_|_met", "", met_samples), with=FALSE], 
+        name = "methylation", 
+        top_annotation = ha, 
+        col = col_fun, 
+        cluster_columns=FALSE,
+        row_split = tmp$type,
+        cluster_row_slices = FALSE,
+        row_title_rot = 0, 
+        row_title = NULL,
+        border = TRUE,
+        heatmap_legend_param = list(direction = "horizontal"),
+        width = unit(6, "cm") 
+        )  +
+      Heatmap(d2plot$type, width = unit(0.3, "cm"), col=col_elem, name="element")  
+
+draw(ht, 
+    heatmap_legend_side = "bottom", 
+    annotation_legend_side = "right")
+
+png(paste0(outdatadir, "CGI.png"), width=1000, height=3000, res=150)
+draw(ht, 
+    heatmap_legend_side = "bottom", 
+    annotation_legend_side = "right")
+dev.off()    
+gc()
+
+```
+
+## Methylation elements
+
+```{r}
+visi <- meth_gr %>% as.data.table() %>% .[, met_samples, with=FALSE]
+genai <- meth_gr[countOverlaps(meth_gr, gene_style_features)>0] %>% as.data.table() %>% .[, met_samples, with=FALSE]
+lncRNA <- meth_gr[countOverlaps(meth_gr, annotations[mcols(annotations)$type == "mm10_lncrna_gencode"])>0] %>% as.data.table() %>% .[, met_samples, with=FALSE]
+TE <- meth_gr[countOverlaps(meth_gr, repeatai)>0] %>% as.data.table() %>% .[, met_samples, with=FALSE]
+Promotoriai <- meth_gr[countOverlaps(meth_gr, annotations[mcols(annotations)$type == "mm10_EPDpromoters"])>0] %>% as.data.table() %>% .[, met_samples, with=FALSE]
+
+temp <- c(annotations[mcols(annotations)$type == "mm10_PoisedEnhancers_Atlas"], annotations[mcols(annotations)$type == "mm10_ActiveEnhancers_Atlas"])
+enhanceriai_dt <- meth_gr[countOverlaps(meth_gr, temp)>0] %>% as.data.table() %>% .[, met_samples, with=FALSE]
+superEnhanceriai_dt <- meth_gr[countOverlaps(meth_gr, annotations[mcols(annotations)$type == "mm10_superEnhancer"])>0] %>% as.data.table() %>% .[, met_samples, with=FALSE]
+silenceriai_dt <- meth_gr[countOverlaps(meth_gr, annotations[mcols(annotations)$type == "mm10_Silencer_E14"])>0] %>% as.data.table() %>% .[, met_samples, with=FALSE]
+CTCF_dt <- meth_gr[countOverlaps(meth_gr, annotations[mcols(annotations)$type == "mm10_CTCF"])>0] %>% as.data.table() %>% .[, met_samples, with=FALSE]
+
+tmp <- rbind(
+  melt(visi) %>% .[, type := "All CpG"],
+  melt(genai) %>% .[, type := "genes"],
+  melt(lncRNA) %>% .[, type := "lncRNA"],
+  melt(Promotoriai) %>% .[, type := "promoter"],
+  melt(enhanceriai_dt) %>% .[, type := "enhancers"],
+  melt(silenceriai_dt) %>% .[, type := "silencers"],
+  melt(CTCF_dt) %>% .[, type := "CTCF"],
+  melt(TE) %>% .[, type := "TE"])  %>% 
+   .[, variable := gsub("WGBS_", "", variable) %>% gsub("_met", "", .)] %>% 
+  .[, variable := factor(variable, levels=names(cols_samplesLong))] %>% 
+  .[, type := factor(type, levels=c("All CpG", "genes", "lncRNA", "TE", "promoter", "enhancers", "CTCF", "silencers"))]
+
+ggplot(tmp, aes(type, value, fill=variable, coulour=variable)) +
+  geom_boxplot(outlier.shape=NA) +
+  theme_Publication() + 
+  scale_fill_manual(values = cols_samplesLong, name = NULL) +
+  ylab("Methylation %") +
+  theme(legend.position="bottom", 
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title.x = element_blank()) 
+```
+

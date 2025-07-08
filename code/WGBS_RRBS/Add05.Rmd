@@ -1,0 +1,576 @@
+```{r}
+library(pacman)
+#p_load(data.table, dplyr, ggplot2, rtracklayer, RColorBrewer, scales, foreach, GenomicRanges, clusterProfiler, doParallel, 
+#viridis, annotatr, stringr, GGally, EnrichedHeatmap, circlize, corrplot, patchwork, org.Mm.eg.db, ggvenn)
+
+p_load(data.table, dplyr, ggplot2, RColorBrewer, patchwork, scales, svglite, org.Mm.eg.db, GenomicRanges, foreach, clusterProfiler, ggthemes, rtracklayer, stringr)
+
+options(scipen=999)
+knitr::opts_chunk$set(fig.width=9, fig.height=7)
+dir.create(outdatadir, recursive=TRUE)
+source("./code/common.R")
+#registerDoParallel(6)
+```
+
+# STUFF {.tabset}  
+
+BlackListed regions are present/counted.  
+
+```{r}
+tmp <- readRDS(paste0("output/code/PrepAllData//WGBS_vs_RRBS_data.RDS"))
+met_gr <- tmp[["methylation_gr_th"]]
+met_gr <- met_gr[seqnames(met_gr) %in% paste0("chr", c(1:19, "X", "Y"))]
+
+th <- 0.75
+
+th_WGBS_KO_met <- quantile(mcols(met_gr)$WGBS_KO_met, th, na.rm=TRUE)
+th_WGBS_homo_met <- quantile(mcols(met_gr)$WGBS_homo_met, th, na.rm=TRUE)
+th_WGBS_hetero_met <- quantile(mcols(met_gr)$WGBS_hetero_met, th, na.rm=TRUE)
+th_WGBS_WT_met <- quantile(mcols(met_gr)$WGBS_WT_met, th, na.rm=TRUE)
+
+met_gr_mod <- copy(met_gr)
+mcols(met_gr_mod)$WGBS_homo_met[mcols(met_gr_mod)$WGBS_homo_met < th_WGBS_homo_met] <- 0
+mcols(met_gr_mod)$WGBS_hetero_met[mcols(met_gr_mod)$WGBS_hetero_met < th_WGBS_hetero_met] <- 0
+mcols(met_gr_mod)$WGBS_WT_met[mcols(met_gr_mod)$WGBS_WT_met < th_WGBS_WT_met] <- 0
+mcols(met_gr_mod)$WGBS_KO_met[mcols(met_gr_mod)$WGBS_KO_met < th_WGBS_KO_met] <- 0
+
+tmp <- readRDS(paste0("output/code/PrepAllData//dAnnotations.RDS"))
+repeatai <- tmp[["repeatai"]]
+mcols(repeatai)$type <- paste0(mcols(repeatai)$Name, "_", mcols(repeatai)$Class, "_", mcols(repeatai)$Familly)
+annotations <- tmp[["anotacijos"]]
+annotations <- annotations[seqnames(annotations) %in% paste0("chr", c(1:19, "X", "Y"))]
+anotacijos <- c(annotations, repeatai)
+
+rm(tmp)
+gc()
+samples2do_BS <- c("WGBS_KO_met", "WGBS_hetero_met", "WGBS_homo_met", "WGBS_WT_met")
+```
+
+
+## CG level TOP25
+
+CG that were not 0 in WT are not used here (calculated as 0). 
+Mean per replicate plotted.
+
+```{r, fig.height=7}
+coverages2 <- copy(met_gr_mod)
+
+gff <- import("/mnt/store/annotations/MusMusculus_mm10_Ensembl/ENCODE/gencode.vM23.annotation.gtf")
+
+# darom nauja anotacija 
+
+tmp <- annotations[mcols(annotations)$type == "mm10_genes_3UTRs"]
+mcols(tmp)$type <- "3UTRs"
+tmp_annotations <- copy(tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_genes_5UTRs"]
+mcols(tmp)$type <- "5UTRs"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_lncrna_gencode"]
+mcols(tmp)$type <- "lncRNA_gencode"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_genes_exons"]
+mcols(tmp)$type <- "exons"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_genes_introns"]
+mcols(tmp)$type <- "introns"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_EPDpromoters"]
+mcols(tmp)$type <- "promoterEPD"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_EPDpromotersNC"]
+mcols(tmp)$type <- "promoter_NC_EPD"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_transcriptsCoding"]
+mcols(tmp)$type <- "codingTranscripts"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_islands"][countOverlaps(annotations[mcols(annotations)$type == "mm10_cpg_islands"], annotations[mcols(annotations)$type == "mm10_EPDpromoters"]) > 0]
+mcols(tmp)$type <- "CGI promoter"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_islands"][countOverlaps(annotations[mcols(annotations)$type == "mm10_cpg_islands"], annotations[mcols(annotations)$type == "mm10_genes_intergenic"]) > 0]
+mcols(tmp)$type <- "CGI intergenic"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_islands"][countOverlaps(annotations[mcols(annotations)$type == "mm10_cpg_islands"], annotations[mcols(annotations)$type == "mm10_transcriptsCoding"]) > 0]
+mcols(tmp)$type <- "CGI intragenic"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_shelves"]
+mcols(tmp)$type <- "CGI shelves"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_shores"]
+mcols(tmp)$type <- "CGI shores"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_islands"]
+mcols(tmp)$type <- "CGI all"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- gff[mcols(gff)$gene_type == "miRNA"] 
+mcols(tmp) <- NULL 
+mcols(tmp)$type <- "miRNA"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- gff[mcols(gff)$gene_type == "snoRNA"]
+mcols(tmp) <- NULL 
+mcols(tmp)$type <- "snoRNA"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- gff[mcols(gff)$gene_type == "snRNA"]
+mcols(tmp) <- NULL 
+mcols(tmp)$type <- "snRNA"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+elements2do <- c("3UTRs", "5UTRs", "lncRNA_gencode", "exons", "introns", "promoterEPD", "promoter_NC_EPD", "codingTranscripts", "CGI promoter", "CGI intergenic", "CGI intragenic", "CGI shelves", "CGI shores", "CGI all", "miRNA", "snoRNA", "snRNA")
+
+
+do_enrichment <- function(featuras, samplas, annotation=annotations, covai=coverages)  {
+#  featuras <- "mm10_cpg_islands"
+#  samplas <- "Hom_R1"
+  
+  if(!(file.exists(paste0(outdatadir, "Enri_", featuras, "_", samplas, "_25.RDS")))) {
+    anno <- annotation[annotation$type == featuras]
+    covai <-  covai[!is.na(elementMetadata(covai)[, samplas]), ]
+    meginys_pos <- covai[elementMetadata(covai)[, samplas]>0]
+    meginys_neg <- covai[elementMetadata(covai)[, samplas]==0]
+    in_cat_pos <- sum(countOverlaps(meginys_pos, anno)>0)
+    in_cat_neg <- sum(countOverlaps(meginys_neg, anno)>0)
+    not_cat_pos <- sum(countOverlaps(meginys_pos, anno)==0)
+    not_cat_neg <- sum(countOverlaps(meginys_neg, anno)==0)
+    d <- data.frame(CG_interest=c(in_cat_pos, not_cat_pos), CG_not_interest=c(in_cat_neg, not_cat_neg))  
+    fi <- fisher.test(d)
+    rezu <- data.table(Pval=fi$p.value, Enri=fi$estimate, Elem=featuras, Sample=samplas, Ntarget=length(meginys_pos))
+    saveRDS(rezu, paste0(outdatadir, "Enri_", featuras, "_", samplas, "_25.RDS"))
+    return(rezu)
+  } else {tmp <- readRDS(paste0(outdatadir, "Enri_", featuras, "_", samplas, "_25.RDS")); return(tmp)}
+} 
+
+
+enri <- foreach(i=samples2do_BS, .combine="rbind") %dopar% {
+  ret <- foreach(j=elements2do, .combine="rbind") %do% {
+    ret <- do_enrichment(j, i, annotation=tmp_annotations, covai=coverages2)
+    return(ret) }
+  return(ret)  
+} %>% 
+  .[Pval <= 0.05, ] %>% 
+  .[, replicate := str_extract( Sample, "R[0-9]")]  %>% 
+  .[, type := strsplit(Sample, "_") %>% sapply(., `[`, 1)]  %>% 
+  .[, Enri := Enri] 
+
+
+
+enri %>% 
+#  .[, Elem := factor(Elem, levels=tvarka)] %>%
+  ggplot(aes(Elem, Enri, fill=type)) +
+    geom_point(shape=21, size=2) +
+    coord_flip() +
+    theme_Publication() +
+    scale_fill_manual(values=cols_samples) 
+
+enri_genomic <- copy(enri)    
+```
+
+```{r, fig.height=4}
+tmp <- repeatai[mcols(repeatai)$Class == "DNA"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "DNA"
+tmp_annotations <- copy(tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "SINE"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "SINE"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "LINE"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "LINE"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "LTR"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "LTR"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "Simple_repeat"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "Simples"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+
+tmp <- repeatai[mcols(repeatai)$Class == "Satellite"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "Satellite"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "Low_complexity"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "Low_complexity"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+reps2do <- c("DNA", "SINE", "LINE", "LTR", "Simples", "Satellite", "Low_complexity")
+
+enri <- foreach(i=samples2do_BS, .combine="rbind") %dopar% {
+  ret <- foreach(j=reps2do, .combine="rbind") %do% {
+    ret <- do_enrichment(j, i, tmp_annotations, covai=coverages2)
+    return(ret) }
+  return(ret)  
+} %>% 
+  .[Pval <= 0.05, ] %>% 
+  .[, replicate := str_extract( Sample, "R[0-9]")]  %>% 
+  .[, type := strsplit(Sample, "_") %>% sapply(., `[`, 1)]  %>% 
+  .[, Enri := Enri] 
+
+
+
+enri %>% 
+  #.[, Elem := factor(Elem, levels=tvarka)] %>%
+  ggplot(aes(Elem, Enri, fill=type)) +
+    geom_point(shape=21, size=2) +
+    coord_flip() +
+    theme_Publication() +
+    scale_fill_manual(values=cols_samples) 
+
+```
+
+Tas pats, kas viršuje, bet sudėta kartu
+
+```{r}
+d <- rbind(enri, enri_genomic)
+
+#tvarka <- d %>% .[type == "Hom", ] %>% setorder(., Enri) %>% .[, Elem]
+
+#temp <- d %>% 
+#  .[, Elem := factor(Elem, levels=tvarka)] 
+
+saveRDS(d, paste0(outdatadir, "Enrichment_CG_025.RDS"))
+
+ggplot(d, aes(Elem, Enri, fill=type)) +
+  geom_point(shape=21, size=2) +
+  coord_flip() +
+  theme_Publication() +
+  scale_fill_manual(values=cols_samples) 
+```
+
+## Enrichment Promoters TOP25
+
+Enrichment (GO BP). There were no results with WT. 
+0.001 threshold was applied. 
+
+```{r,  fig.width=9, fig.height=15}
+coverages <- copy(met_gr_mod) 
+cov_CGI <- coverages[countOverlaps(coverages, annotations[annotations$type == "mm10_cpg_islands"]) > 0, ]
+promotoriai <- annotations[annotations$type == "mm10_EPDpromoters"]
+
+tmp <- foreach(i=samples2do_BS) %do% {
+  cov_CGI2 <- cov_CGI[!is.na(elementMetadata(cov_CGI)[, i]), ]
+  sam2do <- cov_CGI2[elementMetadata(cov_CGI2)[, i] > 0]
+  fo <- findOverlaps(promotoriai, sam2do)
+  return(promotoriai[queryHits(fo)]$gene_id %>% unique) 
+}
+names(tmp) <- samples2do_BS
+WT_genes <- tmp$WGBS_WT_met
+Het_genes <- tmp$WGBS_hetero_met 
+Hom_genes <- tmp$WGBS_homo_met
+KO_genes <- tmp$WGBS_KO_met
+
+listas <- list(Hetero=Het_genes, Homo=Hom_genes, WT=WT_genes, KO=KO_genes)
+
+if(!file.exists(paste0(outdatadir, "promoterEnri_25.RDS"))) {
+ck <- compareCluster(geneCluster = listas, 
+                     fun = enrichGO, universe = promotoriai$gene_id, 
+                     OrgDb = org.Mm.eg.db, readable = TRUE, 
+                     pvalueCutoff  = 0.001,
+                     qvalueCutoff  = 0.001,
+                     pAdjustMethod = "BH",
+                     keyType = "ENSEMBL", ont = "BP")
+saveRDS(ck, paste0(outdatadir, "promoterEnri_25.RDS")) } else {ck <- readRDS(paste0(outdatadir, "promoterEnri_25.RDS"))}
+dotplot(ck, show=50)
+```
+
+
+## CG level TOP 10
+
+
+```{r}
+tmp <- readRDS(paste0("output/code/PrepAllData//WGBS_vs_RRBS_data.RDS"))
+met_gr <- tmp[["methylation_gr_th"]]
+met_gr <- met_gr[seqnames(met_gr) %in% paste0("chr", c(1:19, "X", "Y"))]
+
+th <- 0.9
+
+th_WGBS_KO_met <- quantile(mcols(met_gr)$WGBS_KO_met, th, na.rm=TRUE)
+th_WGBS_homo_met <- quantile(mcols(met_gr)$WGBS_homo_met, th, na.rm=TRUE)
+th_WGBS_hetero_met <- quantile(mcols(met_gr)$WGBS_hetero_met, th, na.rm=TRUE)
+th_WGBS_WT_met <- quantile(mcols(met_gr)$WGBS_WT_met, th, na.rm=TRUE)
+
+met_gr_mod <- copy(met_gr)
+mcols(met_gr_mod)$WGBS_homo_met[mcols(met_gr_mod)$WGBS_homo_met < th_WGBS_homo_met] <- 0
+mcols(met_gr_mod)$WGBS_hetero_met[mcols(met_gr_mod)$WGBS_hetero_met < th_WGBS_hetero_met] <- 0
+mcols(met_gr_mod)$WGBS_WT_met[mcols(met_gr_mod)$WGBS_WT_met < th_WGBS_WT_met] <- 0
+mcols(met_gr_mod)$WGBS_KO_met[mcols(met_gr_mod)$WGBS_KO_met < th_WGBS_KO_met] <- 0
+
+tmp <- readRDS(paste0("output/code/PrepAllData//dAnnotations.RDS"))
+repeatai <- tmp[["repeatai"]]
+mcols(repeatai)$type <- paste0(mcols(repeatai)$Name, "_", mcols(repeatai)$Class, "_", mcols(repeatai)$Familly)
+annotations <- tmp[["anotacijos"]]
+annotations <- annotations[seqnames(annotations) %in% paste0("chr", c(1:19, "X", "Y"))]
+anotacijos <- c(annotations, repeatai)
+
+rm(tmp)
+gc()
+samples2do_BS <- c("WGBS_KO_met", "WGBS_hetero_met", "WGBS_homo_met", "WGBS_WT_met")
+```
+
+
+## CG level TOP25
+
+CG that were not 0 in WT are not used here (calculated as 0). 
+Mean per replicate plotted.
+
+```{r, fig.height=7}
+coverages2 <- copy(met_gr_mod)
+
+gff <- import("/mnt/store/annotations/MusMusculus_mm10_Ensembl/ENCODE/gencode.vM23.annotation.gtf")
+
+# darom nauja anotacija 
+
+tmp <- annotations[mcols(annotations)$type == "mm10_genes_3UTRs"]
+mcols(tmp)$type <- "3UTRs"
+tmp_annotations <- copy(tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_genes_5UTRs"]
+mcols(tmp)$type <- "5UTRs"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_lncrna_gencode"]
+mcols(tmp)$type <- "lncRNA_gencode"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_genes_exons"]
+mcols(tmp)$type <- "exons"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_genes_introns"]
+mcols(tmp)$type <- "introns"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_EPDpromoters"]
+mcols(tmp)$type <- "promoterEPD"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_EPDpromotersNC"]
+mcols(tmp)$type <- "promoter_NC_EPD"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_transcriptsCoding"]
+mcols(tmp)$type <- "codingTranscripts"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_islands"][countOverlaps(annotations[mcols(annotations)$type == "mm10_cpg_islands"], annotations[mcols(annotations)$type == "mm10_EPDpromoters"]) > 0]
+mcols(tmp)$type <- "CGI promoter"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_islands"][countOverlaps(annotations[mcols(annotations)$type == "mm10_cpg_islands"], annotations[mcols(annotations)$type == "mm10_genes_intergenic"]) > 0]
+mcols(tmp)$type <- "CGI intergenic"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_islands"][countOverlaps(annotations[mcols(annotations)$type == "mm10_cpg_islands"], annotations[mcols(annotations)$type == "mm10_transcriptsCoding"]) > 0]
+mcols(tmp)$type <- "CGI intragenic"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_shelves"]
+mcols(tmp)$type <- "CGI shelves"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_shores"]
+mcols(tmp)$type <- "CGI shores"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_islands"]
+mcols(tmp)$type <- "CGI all"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- gff[mcols(gff)$gene_type == "miRNA"] 
+mcols(tmp) <- NULL 
+mcols(tmp)$type <- "miRNA"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- gff[mcols(gff)$gene_type == "snoRNA"]
+mcols(tmp) <- NULL 
+mcols(tmp)$type <- "snoRNA"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- gff[mcols(gff)$gene_type == "snRNA"]
+mcols(tmp) <- NULL 
+mcols(tmp)$type <- "snRNA"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+elements2do <- c("3UTRs", "5UTRs", "lncRNA_gencode", "exons", "introns", "promoterEPD", "promoter_NC_EPD", "codingTranscripts", "CGI promoter", "CGI intergenic", "CGI intragenic", "CGI shelves", "CGI shores", "CGI all", "miRNA", "snoRNA", "snRNA")
+
+
+do_enrichment <- function(featuras, samplas, annotation=annotations, covai=coverages)  {
+#  featuras <- "mm10_cpg_islands"
+#  samplas <- "Hom_R1"
+  
+  if(!(file.exists(paste0(outdatadir, "Enri_", featuras, "_", samplas, "_10.RDS")))) {
+    anno <- annotation[annotation$type == featuras]
+    covai <-  covai[!is.na(elementMetadata(covai)[, samplas]), ]
+    meginys_pos <- covai[elementMetadata(covai)[, samplas]>0]
+    meginys_neg <- covai[elementMetadata(covai)[, samplas]==0]
+    in_cat_pos <- sum(countOverlaps(meginys_pos, anno)>0)
+    in_cat_neg <- sum(countOverlaps(meginys_neg, anno)>0)
+    not_cat_pos <- sum(countOverlaps(meginys_pos, anno)==0)
+    not_cat_neg <- sum(countOverlaps(meginys_neg, anno)==0)
+    d <- data.frame(CG_interest=c(in_cat_pos, not_cat_pos), CG_not_interest=c(in_cat_neg, not_cat_neg))  
+    fi <- fisher.test(d)
+    rezu <- data.table(Pval=fi$p.value, Enri=fi$estimate, Elem=featuras, Sample=samplas, Ntarget=length(meginys_pos))
+    saveRDS(rezu, paste0(outdatadir, "Enri_", featuras, "_", samplas, "_10.RDS"))
+    return(rezu)
+  } else {tmp <- readRDS(paste0(outdatadir, "Enri_", featuras, "_", samplas, "_10.RDS")); return(tmp)}
+} 
+
+
+enri <- foreach(i=samples2do_BS, .combine="rbind") %dopar% {
+  ret <- foreach(j=elements2do, .combine="rbind") %do% {
+    ret <- do_enrichment(j, i, annotation=tmp_annotations, covai=coverages2)
+    return(ret) }
+  return(ret)  
+} %>% 
+  .[Pval <= 0.05, ] %>% 
+  .[, replicate := str_extract( Sample, "R[0-9]")]  %>% 
+  .[, type := strsplit(Sample, "_") %>% sapply(., `[`, 1)]  %>% 
+  .[, Enri := Enri] 
+
+
+
+enri %>% 
+#  .[, Elem := factor(Elem, levels=tvarka)] %>%
+  ggplot(aes(Elem, Enri, fill=type)) +
+    geom_point(shape=21, size=2) +
+    coord_flip() +
+    theme_Publication() +
+    scale_fill_manual(values=cols_samples) 
+
+enri_genomic <- copy(enri)    
+```
+
+```{r, fig.height=4}
+tmp <- repeatai[mcols(repeatai)$Class == "DNA"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "DNA"
+tmp_annotations <- copy(tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "SINE"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "SINE"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "LINE"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "LINE"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "LTR"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "LTR"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "Simple_repeat"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "Simples"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+
+tmp <- repeatai[mcols(repeatai)$Class == "Satellite"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "Satellite"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "Low_complexity"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "Low_complexity"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+reps2do <- c("DNA", "SINE", "LINE", "LTR", "Simples", "Satellite", "Low_complexity")
+
+enri <- foreach(i=samples2do_BS, .combine="rbind") %dopar% {
+  ret <- foreach(j=reps2do, .combine="rbind") %do% {
+    ret <- do_enrichment(j, i, tmp_annotations, covai=coverages2)
+    return(ret) }
+  return(ret)  
+} %>% 
+  .[Pval <= 0.05, ] %>% 
+  .[, replicate := str_extract( Sample, "R[0-9]")]  %>% 
+  .[, type := strsplit(Sample, "_") %>% sapply(., `[`, 1)]  %>% 
+  .[, Enri := Enri] 
+
+
+
+enri %>% 
+  #.[, Elem := factor(Elem, levels=tvarka)] %>%
+  ggplot(aes(Elem, Enri, fill=type)) +
+    geom_point(shape=21, size=2) +
+    coord_flip() +
+    theme_Publication() +
+    scale_fill_manual(values=cols_samples) 
+
+```
+
+Tas pats, kas viršuje, bet sudėta kartu
+
+```{r}
+d <- rbind(enri, enri_genomic)
+
+saveRDS(d, paste0(outdatadir, "Enrichment_CG_10.RDS"))
+
+ggplot(d, aes(Elem, Enri, fill=type)) +
+  geom_point(shape=21, size=2) +
+  coord_flip() +
+  theme_Publication() +
+  scale_fill_manual(values=cols_samples) 
+```
+
+## Enrichment Promoters TOP10
+
+Enrichment (GO BP). There were no results with WT. 
+0.001 threshold was applied. 
+
+```{r,  fig.width=9, fig.height=15}
+coverages <- copy(met_gr_mod) 
+cov_CGI <- coverages[countOverlaps(coverages, annotations[annotations$type == "mm10_cpg_islands"]) > 0, ]
+promotoriai <- annotations[annotations$type == "mm10_EPDpromoters"]
+
+tmp <- foreach(i=samples2do_BS) %do% {
+  cov_CGI2 <- cov_CGI[!is.na(elementMetadata(cov_CGI)[, i]), ]
+  sam2do <- cov_CGI2[elementMetadata(cov_CGI2)[, i] > 0]
+  fo <- findOverlaps(promotoriai, sam2do)
+  return(promotoriai[queryHits(fo)]$gene_id %>% unique) 
+}
+names(tmp) <- samples2do_BS
+WT_genes <- tmp$WGBS_WT_met
+Het_genes <- tmp$WGBS_hetero_met 
+Hom_genes <- tmp$WGBS_homo_met
+KO_genes <- tmp$WGBS_KO_met
+
+listas <- list(Hetero=Het_genes, Homo=Hom_genes, WT=WT_genes, KO=KO_genes)
+
+if(!file.exists(paste0(outdatadir, "promoterEnri_10.RDS"))) {
+ck <- compareCluster(geneCluster = listas, 
+                     fun = enrichGO, universe = promotoriai$gene_id, 
+                     OrgDb = org.Mm.eg.db, readable = TRUE, 
+                     pvalueCutoff  = 0.001,
+                     qvalueCutoff  = 0.001,
+                     pAdjustMethod = "BH",
+                     keyType = "ENSEMBL", ont = "BP")
+saveRDS(ck, paste0(outdatadir, "promoterEnri_10.RDS")) } else {ck <- readRDS(paste0(outdatadir, "promoterEnri_10.RDS"))}
+dotplot(ck, show=50)
+```

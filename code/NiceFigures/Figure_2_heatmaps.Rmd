@@ -1,0 +1,300 @@
+```{r}
+library(pacman)
+p_load(data.table, dplyr, ggplot2, ComplexHeatmap, gridSVG, circlize, viridis, RColorBrewer, GenomicRanges, ggpubr,
+EnrichedHeatmap, rtracklayer, ComplexHeatmap, patchwork, ggrepel, scales, stringr, foreach, ggpmisc, ggrastr) 
+knitr::opts_chunk$set(dev='gridSVG', res=300, fig.height=4, fig.width=4, fig.align = "center")
+#knitr::opts_chunk$set(res=300, fig.height=5, fig.width=9)
+options(scipen=1)
+dir.create(outdatadir, recursive=TRUE)
+source("code/common.R")
+samples2do_BS <- c("RRBS_homo_met", "RRBS_hetero_met", "WGBS_KO_met", "WGBS_hetero_met", "WGBS_homo_met", "WGBS_WT_met")
+samples2do_TOP <- c("WT", "Het", "Hom") 
+```
+
+# Tabs {.tabset}
+
+```{r}
+tmp <- readRDS(paste0("output/code/PrepAllData/dAnnotations.RDS"))  
+annotations <- tmp[["anotacijos"]]
+repeatai <- tmp[["repeatai"]]
+
+CGI <- annotations[mcols(annotations)$type ==  "mm10_cpg_islands"]
+CGI_full <- annotations[mcols(annotations)$type == "mm10_cpgUnmsk_UCSC"]
+CGI_repeats <- CGI_full[countOverlaps(CGI_full, annotations[mcols(annotations)$type ==  "mm10_cpg_islands"])== 0]
+
+coveragesOrig <- readRDS("./output/code/PrepAllData/mutantai_coverages2useTopData.RDS")
+coveragesOrig_gr <- coveragesOrig %>% 
+  .[, end := start] %>% 
+  .[, c("chr", "start", "end", samples2do_TOP), with=FALSE] %>% 
+  .[chr %in% paste0("chr", c(1:19, "X", "Y"))] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+coverages <- coveragesOrig %>% 
+  .[WT>0, WT := 1] %>% 
+  .[Het>0, Het := 1] %>% 
+  .[Hom>0, Hom := 1] %>% 
+  .[, end := start] %>% 
+  .[, c("chr", "start", "end", samples2do_TOP), with=FALSE] %>% 
+  .[chr %in% paste0("chr", c(1:19, "X", "Y"))] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+tmp <- readRDS(paste0("output/code/PrepAllData//WGBS_vs_RRBS_data.RDS"))
+met_gr <- tmp[["methylation_gr_th"]]
+met_gr <- met_gr[seqnames(met_gr) %in% paste0("chr", c(1:19, "X", "Y"))]
+
+rm(tmp)
+gc()  
+
+bin_size <- 2000
+Dnmt_bins <- coverages %>% 
+  as.data.table() %>% 
+  .[, bin_ID := paste0(seqnames, "_", ceiling(start/bin_size), "_", ceiling(start/bin_size) + 1)] %>% 
+  .[, .(bin_ID, WT, Het, Hom, width)] %>% 
+  .[, lapply(.SD, sum), by="bin_ID"] %>% 
+  .[, WT := WT/width] %>% 
+  .[, Het := Het/width] %>% 
+  .[, Hom := Hom/width] 
+
+met_bins <- met_gr %>% 
+  as.data.table() %>% 
+  .[, bin_ID := paste0(seqnames, "_", ceiling(start/bin_size), "_", ceiling(start/bin_size) + 1)] %>% 
+  .[, .(bin_ID, RRBS_homo_met, RRBS_hetero_met, WGBS_KO_met, WGBS_WT_met, WGBS_hetero_met, WGBS_homo_met)] %>% 
+  .[, lapply(.SD, mean, na.rm=TRUE), by="bin_ID"] 
+
+d <- merge(Dnmt_bins, met_bins, by="bin_ID", all=TRUE) %>% as.data.table()
+
+d_gr <- d %>% 
+  .[, seqnames := strsplit(bin_ID, "_") %>% sapply(., `[`, 1)] %>% 
+  .[, start := (strsplit(bin_ID, "_") %>% sapply(., `[`, 2) %>% as.numeric()) * bin_size + 1 ] %>% 
+  .[, end := (strsplit(bin_ID, "_") %>% sapply(., `[`, 3) %>% as.numeric()) * bin_size] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+CGI <- annotations[mcols(annotations)$type == "mm10_cpg_islands"] 
+mcols(CGI)$gene_id <- NULL
+mcols(CGI)$gene_id <- NULL
+mcols(CGI)$type <- NULL
+mcols(CGI)$symbol <- NULL
+mcols(CGI)$tx_id <- NULL
+mcols(CGI)$bin_ID <- mcols(CGI)$id
+mcols(CGI)$id <- NULL
+
+fo <- findOverlaps(CGI, met_gr) 
+CGI_meth <- cbind(as.data.table(CGI[queryHits(fo)]) %>% .[, .(seqnames, start, end, strand, bin_ID)], 
+  as.data.table(met_gr[subjectHits(fo)]) %>% .[, .(RRBS_homo_met, RRBS_hetero_met, WGBS_KO_met, WGBS_WT_met, WGBS_hetero_met, WGBS_homo_met)]) %>% 
+  .[, lapply(.SD, mean), by=c("seqnames", "start", "end", "strand", "bin_ID")] %>% 
+   setkey(., bin_ID)
+
+
+CGI_fr <- copy(CGI)
+nCG <- countOverlaps(CGI, coverages)
+mcols(CGI_fr)$WT <- countOverlaps(CGI, coverages[mcols(coverages)$WT > 0])/nCG
+mcols(CGI_fr)$Het <- countOverlaps(CGI, coverages[mcols(coverages)$Het > 0])/nCG
+mcols(CGI_fr)$Hom <- countOverlaps(CGI, coverages[mcols(coverages)$Hom > 0])/nCG
+CGI_fr <- CGI_fr %>% as.data.table() %>% setkey(., bin_ID) 
+
+all(CGI_fr$bin_ID == CGI_meth$bin_ID)
+CGI_gr <- cbind(CGI_fr, CGI_meth[, c("RRBS_homo_met", "RRBS_hetero_met", "WGBS_KO_met", "WGBS_WT_met", "WGBS_hetero_met", "WGBS_homo_met"), with=FALSE]) %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)  
+```
+
+```{r}
+make_dens <- function(x, y, xlab, ylab, titlas, adjustas, breakai, limitai) {
+  dd <- cbind(x, y) %>% 
+    as.data.table() %>% 
+    setnames(., c("x", "y"))
+  coru <- cor.test(dd$x, dd$y) 
+  if(coru$p.value<2.2e-16) {pval <- ", p < 2.2e-16"} else {pval <- paste0(", p = ", format(coru$p.value, scientific=TRUE))}
+  
+  rbind(dd, data.table(x=c(0, 0, 1, 1), y=c(0, 100, 0, 100))) %>% 
+   ggplot(aes(x, y)) +
+      rasterise(stat_density_2d(aes(fill = after_stat(ndensity)), geom = "raster", contour = FALSE, adjust = adjustas), dpi=300) +
+      scale_fill_distiller(palette= "RdYlBu", direction=-1, breaks = breakai, limits=limitai) +
+      scale_x_continuous(expand = c(0, 0)) + 
+      scale_y_continuous(expand = c(0, 0)) + 
+      coord_cartesian(ylim=c(0, 100), xlim=c(0, 1)) +
+      theme_bw() +
+      ylab(ylab) +
+      xlab(xlab) +
+      #stat_cor(method="pearson", aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),) +
+      annotate(geom="text", x=0.35, y=90, label=paste0("R=",round(coru$estimate, 2), ", R2=", round(coru$estimate^2, 2), pval ), color="black") +
+      ggtitle(titlas) +
+      theme( 
+            legend.key.size = unit(1, 'cm'),
+            strip.text.y = element_blank(),
+            axis.title=element_blank(),
+            axis.text=element_blank(),
+            strip.text.x = element_blank(),
+            plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"), 
+            legend.position="none",
+            panel.background = element_rect(fill = "#4575b4", color = NA),  # Set the background color
+            #plot.background = element_rect(fill = "#4575b4", color = NA),
+            panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank()
+           )  
+}    
+```
+
+## Legend, axis
+
+
+
+```{r, fig.height=5, fig.width=4.5}
+adjustas <- 3
+
+p <- make_dens(d$Hom[!(is.na(d$Hom) | is.na(d$WGBS_homo_met))], d$WGBS_homo_met[!(is.na(d$Hom) | is.na(d$WGBS_homo_met))], "", "", "", adjustas,  c(0.0, 0.25, 0.5, 0.75), c(0, 1)) 
+p + theme(legend.position="bottom", axis.text=element_text()) +
+    ggtitle("Pavyzdukas") +
+    xlab("topSeq") +
+    ylab("WGBS/RRBS")
+```
+
+
+
+## WGBS, main
+
+
+
+```{r, fig.height=12.70, fig.width=8}
+p1 <- make_dens(d$Hom[!(is.na(d$Hom) | is.na(d$WGBS_homo_met))], d$WGBS_homo_met[!(is.na(d$Hom) | is.na(d$WGBS_homo_met))], "", "", "bins", adjustas,  c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p2 <- make_dens(d$Het[!(is.na(d$Het) | is.na(d$WGBS_hetero_met))], d$WGBS_hetero_met[!(is.na(d$Het) | is.na(d$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_proteinCoding"])>0]) %>% as.data.table())
+
+p3 <- make_dens(tmp$Hom[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], tmp$WGBS_homo_met[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], "", "", "protCondingBins", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p4 <- make_dens(tmp$Het[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], tmp$WGBS_hetero_met[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_cpg_islands"])>0]) %>% as.data.table())
+p5 <- make_dens(tmp$Hom[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], tmp$WGBS_homo_met[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], "", "", "CGI bins", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p6 <- make_dens(tmp$Het[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], tmp$WGBS_hetero_met[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+(p1 | p2) / (p3 | p4) / (p5 | p6)
+```
+
+### CGI variants
+
+Using bins 
+
+```{r, fig.height=12.70, fig.width=8}
+p1 <- make_dens(d$Hom[!(is.na(d$Hom) | is.na(d$WGBS_homo_met))], d$WGBS_homo_met[!(is.na(d$Hom) | is.na(d$WGBS_homo_met))], "", "", "bins", adjustas,  c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p2 <- make_dens(d$Het[!(is.na(d$Het) | is.na(d$WGBS_hetero_met))], d$WGBS_hetero_met[!(is.na(d$Het) | is.na(d$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_proteinCoding"])>0]) %>% as.data.table())
+
+p3 <- make_dens(tmp$Hom[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], tmp$WGBS_homo_met[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], "", "", "protCondingBins", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p4 <- make_dens(tmp$Het[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], tmp$WGBS_hetero_met[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+temp <- d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_cpg_islands"])>0]
+fo <- findOverlaps(temp, annotations[mcols(annotations)$type == "mm10_cpg_islands"])
+ID2sel <- cbind(as.data.table((temp[queryHits(fo)])),  CGI_width=width(pintersect((temp[queryHits(fo)]), annotations[mcols(annotations)$type == "mm10_cpg_islands"][subjectHits(fo)]))) %>% 
+  .[, lapply(.SD, sum), by="bin_ID", .SDcols="CGI_width"] %>% 
+  .[(CGI_width / 2000) > 0.50, bin_ID]
+
+
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_cpg_islands"])>0]) %>% as.data.table())
+tmp <- tmp[bin_ID %in% ID2sel, ]
+
+p5 <- make_dens(tmp$Hom[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], tmp$WGBS_homo_met[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], "", "", "CGI bins", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p6 <- make_dens(tmp$Het[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], tmp$WGBS_hetero_met[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+
+(p1 | p2) / (p3 | p4) / (p5 | p6)
+```
+
+
+Real CGI
+
+
+
+```{r, fig.height=12.70, fig.width=8}
+p1 <- make_dens(d$Hom[!(is.na(d$Hom) | is.na(d$WGBS_homo_met))], d$WGBS_homo_met[!(is.na(d$Hom) | is.na(d$WGBS_homo_met))], "", "", "bins", adjustas,  c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p2 <- make_dens(d$Het[!(is.na(d$Het) | is.na(d$WGBS_hetero_met))], d$WGBS_hetero_met[!(is.na(d$Het) | is.na(d$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_proteinCoding"])>0]) %>% as.data.table())
+p3 <- make_dens(tmp$Hom[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], tmp$WGBS_homo_met[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], "", "", "protCondingBins", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p4 <- make_dens(tmp$Het[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], tmp$WGBS_hetero_met[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+tmp <- (elementMetadata(CGI_gr[countOverlaps(CGI_gr, annotations[mcols(annotations)$type == "mm10_cpg_islands"])>0]) %>% as.data.table())
+p5 <- make_dens(tmp$Hom[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], tmp$WGBS_homo_met[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], "", "", "CGI island", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p6 <- make_dens(tmp$Het[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], tmp$WGBS_hetero_met[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+
+(p1 | p2) / (p3 | p4) / (p5 | p6)
+```
+
+
+
+## RRBS, main
+
+
+
+```{r, fig.height=12.70, fig.width=8}
+p1r <- make_dens(d$Hom[!(is.na(d$Hom) | is.na(d$RRBS_homo_met))], d$RRBS_homo_met[!(is.na(d$Hom) | is.na(d$RRBS_homo_met))], "", "", "bins", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p2r <- make_dens(d$Het[!(is.na(d$Het) | is.na(d$RRBS_hetero_met))], d$RRBS_hetero_met[!(is.na(d$Het) | is.na(d$RRBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_proteinCoding"])>0]) %>% as.data.table())
+p3r <- make_dens(tmp$Hom[!(is.na(tmp$Hom) | is.na(tmp$RRBS_homo_met))], tmp$RRBS_homo_met[!(is.na(tmp$Hom) | is.na(tmp$RRBS_homo_met))], "", "", "protCodingBins", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p4r <- make_dens(tmp$Het[!(is.na(tmp$Het) | is.na(tmp$RRBS_hetero_met))], tmp$RRBS_hetero_met[!(is.na(tmp$Het) | is.na(tmp$RRBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_cpg_islands"])>0]) %>% as.data.table())
+p5r <- make_dens(tmp$Hom[!(is.na(tmp$Hom) | is.na(tmp$RRBS_homo_met))], tmp$RRBS_homo_met[!(is.na(tmp$Hom) | is.na(tmp$RRBS_homo_met))], "", "", "CGI bins", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p6r <- make_dens(tmp$Het[!(is.na(tmp$Het) | is.na(tmp$RRBS_hetero_met))], tmp$RRBS_hetero_met[!(is.na(tmp$Het) | is.na(tmp$RRBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+(p1r | p2r) / (p3r | p4r) / (p5r | p6r)
+```
+
+## WGBS other elements 
+
+```{r}
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_cpg_shelves"])>0, ]) %>% as.data.table())
+p1 <- make_dens(tmp$Hom[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], tmp$WGBS_homo_met[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], "", "", "BINS CGI shelves", adjustas,  c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p2 <- make_dens(tmp$Het[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], tmp$WGBS_hetero_met[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_cpg_shores"])>0, ]) %>% as.data.table())
+p5 <- make_dens(tmp$Hom[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], tmp$WGBS_homo_met[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], "", "", "BINS CGI shores", adjustas,  c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p6 <- make_dens(tmp$Het[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], tmp$WGBS_hetero_met[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+tmp <- (elementMetadata(d_gr[(countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_cpg_islands"])>0) & (countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_EPDpromoters"])>0), ]) %>% as.data.table())
+p9 <- make_dens(tmp$Hom[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], tmp$WGBS_homo_met[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], "", "", "Bins+CGI+EPDprom", adjustas,  c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p10 <- make_dens(tmp$Het[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], tmp$WGBS_hetero_met[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+tmp <- (elementMetadata(d_gr[(countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_cpg_islands"])>0) & (countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_proteinCoding"])>0), ]) %>% as.data.table())
+p13 <- make_dens(tmp$Hom[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], tmp$WGBS_homo_met[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], "", "", "Bins+CGI+protCoding", adjustas,  c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p14 <- make_dens(tmp$Het[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], tmp$WGBS_hetero_met[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+tmp <- (elementMetadata(d_gr[(countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_cpg_islands"])>0) & (countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_proteinCoding"])==0) & (countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_EPDpromoters"])==0), ]) %>% as.data.table())
+p17 <- make_dens(tmp$Hom[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], tmp$WGBS_homo_met[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], "", "", "Bins+CGI+intergenic", adjustas,  c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p18 <- make_dens(tmp$Het[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], tmp$WGBS_hetero_met[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_EPDpromoters"])>0]) %>% as.data.table())
+p21 <- make_dens(tmp$Hom[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], tmp$WGBS_homo_met[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], "", "", "Bins+EPDpromoter", adjustas,  c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p22 <- make_dens(tmp$Het[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], tmp$WGBS_hetero_met[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_proteinCoding"])>0]) %>% as.data.table())
+p25 <- make_dens(tmp$Hom[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], tmp$WGBS_homo_met[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], "", "", "Bins+proteinCoding", adjustas,  c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p26 <- make_dens(tmp$Het[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], tmp$WGBS_hetero_met[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_enhancers"])>0]) %>% as.data.table())
+p29 <- make_dens(tmp$Hom[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], tmp$WGBS_homo_met[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], "", "", "Bins+enhancers", adjustas,  c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p30 <- make_dens(tmp$Het[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], tmp$WGBS_hetero_met[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_Silencer_mESC"])>0]) %>% as.data.table())
+p33 <- make_dens(tmp$Hom[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], tmp$WGBS_homo_met[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], "", "", "Bins+silencersmESC", adjustas,  c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p34 <- make_dens(tmp$Het[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], tmp$WGBS_hetero_met[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_Silencer_E14"])>0]) %>% as.data.table())
+p37 <- make_dens(tmp$Hom[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], tmp$WGBS_homo_met[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], "", "", "Bins+silencersE14", adjustas,  c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p38 <- make_dens(tmp$Het[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], tmp$WGBS_hetero_met[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_CTCF"])>0]) %>% as.data.table())
+p41 <- make_dens(tmp$Hom[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], tmp$WGBS_homo_met[!(is.na(tmp$Hom) | is.na(tmp$WGBS_homo_met))], "", "", "Bins+CTCF", adjustas,  c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+p42 <- make_dens(tmp$Het[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], tmp$WGBS_hetero_met[!(is.na(tmp$Het) | is.na(tmp$WGBS_hetero_met))], "", "", "", adjustas, c(0.0, 0.25, 0.5, 0.75), c(0, 1))
+
+```
+
+
+```{r, fig.height=46, fig.width=8}
+(p1|p2)/(p5|p6)/(p9|p10)/(p13|p14)/(p17|p18)/(p21|p22)/(p25|p26)/(p29|p30)/(p33|p34)/(p37|p38)/(p41|p42)
+```

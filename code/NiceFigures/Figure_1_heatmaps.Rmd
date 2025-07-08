@@ -1,0 +1,531 @@
+```{r}
+library(pacman)
+p_load(data.table, dplyr, ggplot2, ComplexHeatmap, gridSVG, circlize, viridis, RColorBrewer, GenomicRanges, EnrichedHeatmap, rtracklayer, ComplexHeatmap, patchwork) 
+knitr::opts_chunk$set(dev='gridSVG', res=300, fig.height=4, fig.width=4, fig.align = "center")
+options(scipen=999)
+dir.create(outdatadir, recursive=TRUE)
+source("code/common.R")
+met_samples <- c("WGBS_WT_met", "WGBS_hetero_met", "WGBS_homo_met", "WGBS_KO_met")
+rrbs_samples <- c("RRBS_homo_met", "RRBS_hetero_met")
+
+tmp <- readRDS(paste0("output/code/PrepAllData//WGBS_vs_RRBS_data.RDS"))
+meth <- tmp[["methylation_gr_th"]] %>% as.data.table() %>% 
+  .[, `:=` (seqnames = NULL, start = NULL, end = NULL, width = NULL, strand = NULL)]
+meth_gr <- tmp[["methylation_gr_th"]] 
+meth_gr_full <- tmp[["methylation_gr_full"]]
+```
+
+# Figures {.tabset}
+
+
+
+```{r}
+tmp <- readRDS(paste0("output/code/PrepAllData//dAnnotations.RDS"))
+repeatai <- tmp[["repeatai"]]
+mcols(repeatai)$type <- paste0(mcols(repeatai)$Name, "_", mcols(repeatai)$Class, "_", mcols(repeatai)$Familly)
+annotations <- tmp[["anotacijos"]]
+anotacijos <- c(annotations, repeatai)
+
+CGI <- annotations[mcols(annotations)$type == "mm10_cpg_islands"]
+gene_style_features <- c(annotations[mcols(annotations)$type == "mm10_genes_3UTRs"], 
+                         annotations[mcols(annotations)$type == "mm10_genes_5UTRs"], 
+                         annotations[mcols(annotations)$type == "mm10_genes_cds"], 
+                         annotations[mcols(annotations)$type == "mm10_genes_exons"], 
+                         annotations[mcols(annotations)$type == "mm10_genes_introns"], 
+                         annotations[mcols(annotations)$type == "mm10_proteinCoding"]
+) %>% reduce()
+
+mcols(CGI)$type[countOverlaps(CGI, gene_style_features) > 0 ] <- "genes"
+mcols(CGI)$type[countOverlaps(CGI, gene_style_features) == 0 ] <- "intergenic"
+mcols(CGI)$type[countOverlaps(CGI, annotations[mcols(annotations)$type == "mm10_EPDpromoters"]) > 0] <- "promoter" 
+
+fo <- findOverlaps(CGI, meth_gr)
+CGI_met <- cbind(CGI[queryHits(fo)] %>% as.data.table() %>% .[, .(type, id)], 
+      meth_gr[subjectHits(fo)] %>% as.data.table() %>% .[, c(met_samples, "ID"), with=FALSE]) %>% 
+      .[, c(met_samples, "id"), with=FALSE] %>% 
+      .[, lapply(.SD, mean, na.rm=TRUE), by="id"]
+
+CGI2do <- data.table(CGI_met$id, rowMeans(CGI_met[, met_samples, with=FALSE])) %>% 
+  setkey(., V2) %>% 
+  tail(.,  2000) %>% 
+  .[, V1]
+       
+tmp <- CGI_met[id %in% CGI2do, ] %>% 
+  merge(., (CGI %>% as.data.table() %>% .[, .(id, type)])) %>% 
+  .[]
+```
+
+## Heatmaps
+
+```{r}
+make_heatmap_groups <- function(meth_th, meth_full, feat2do, vardas) {
+  extend <- 4000
+  if(!file.exists(paste0(outdatadir, vardas, ".RDS"))) {
+      mat_RRBS_homo <- normalizeToMatrix(meth_th, feat2do, value_column = "RRBS_homo_met", mean_mode = "absolute",
+          extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100))
+      mat_RRBS_hetero <- normalizeToMatrix(meth_th, feat2do, value_column = "RRBS_hetero_met", mean_mode = "absolute",
+          extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100))
+      mat_WGBS_hetero <- normalizeToMatrix(meth_th, feat2do, value_column = "WGBS_hetero_met", mean_mode = "absolute",
+          extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100))
+      mat_WGBS_homo <- normalizeToMatrix(meth_th, feat2do, value_column = "WGBS_homo_met", mean_mode = "absolute",
+          extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100))
+      mat_WGBS_KO <- normalizeToMatrix(meth_th, feat2do, value_column = "WGBS_KO_met", mean_mode = "absolute",
+          extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100))
+      mat_WGBS_WT <- normalizeToMatrix(meth_th, feat2do, value_column = "WGBS_WT_met", mean_mode = "absolute",
+          extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100)) 
+
+      mat_RRBS_homo_n <- normalizeToMatrix(meth_full, feat2do, value_column = "RRBS_homo_met", mean_mode = "absolute",
+          extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100))
+      mat_RRBS_hetero_n <- normalizeToMatrix(meth_full, feat2do, value_column = "RRBS_hetero_met", mean_mode = "absolute",
+          extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100))
+      mat_WGBS_hetero_n <- normalizeToMatrix(meth_full, feat2do, value_column = "WGBS_hetero_met", mean_mode = "absolute",
+          extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100))
+      mat_WGBS_homo_n <- normalizeToMatrix(meth_full, feat2do, value_column = "WGBS_homo_met", mean_mode = "absolute",
+          extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100))
+      mat_WGBS_KO_n <- normalizeToMatrix(meth_full, feat2do, value_column = "WGBS_KO_met", mean_mode = "absolute",
+          extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100))
+      mat_WGBS_WT_n <- normalizeToMatrix(meth_full, feat2do, value_column = "WGBS_WT_met", mean_mode = "absolute",
+          extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100)) 
+
+
+
+          saveRDS(list(mat_RRBS_homo, mat_RRBS_hetero, mat_WGBS_hetero, mat_WGBS_homo, mat_WGBS_KO, mat_WGBS_WT), paste0(outdatadir, vardas, ".RDS"))
+          saveRDS(list(mat_RRBS_homo_n, mat_RRBS_hetero_n, mat_WGBS_hetero_n, mat_WGBS_homo_n, mat_WGBS_KO_n, mat_WGBS_WT_n), paste0(outdatadir, vardas, "_full.RDS"))
+
+      } else {tmp <- readRDS(paste0(outdatadir, vardas, ".RDS"))
+              mat_RRBS_homo <- tmp[[1]]
+              mat_RRBS_hetero <- tmp[[2]]
+              mat_WGBS_hetero <- tmp[[3]] 
+              mat_WGBS_homo <- tmp[[4]]
+              mat_WGBS_KO <- tmp[[5]]
+              mat_WGBS_WT <-tmp[[6]]
+      }
+
+  top_L_WGBS <- HeatmapAnnotation(
+          #lines = anno_enriched(gp = gpar(col = 2:4)),
+          enriched = anno_enriched(
+              gp = gpar(col = brewer.pal(n=3, "Dark2")),
+              ylim = c(0, 100),
+              axis_param = list(
+                  at = c(0, 50, 100),
+                  labels = c("0", "50", "100"),
+                  side = "left",
+                  facing = "outside"
+      )))
+
+  top_M_WGBS <- HeatmapAnnotation(
+          enriched = anno_enriched(
+              gp = gpar(col = brewer.pal(n=3, "Dark2")),
+              ylim = c(0, 100),
+              axis_param = list(
+                  at = c(0, 50, 100),
+                  labels = c("", "50", ""),
+                  side = "left",
+                  facing = "inside"
+      )))
+
+  top_L_RRBS <- HeatmapAnnotation(
+          enriched = anno_enriched(
+              gp = gpar(col = brewer.pal(n=3, "Dark2")),
+              ylim = c(0, 10),
+              axis_param = list(
+                  at = c(0, 5, 10),
+                  labels = c("0", "5", "10"),
+                  side = "left",
+                  facing = "inside"
+      )))
+
+  top_R_RRBS <- HeatmapAnnotation(
+          enriched = anno_enriched(
+              gp = gpar(col = brewer.pal(n=3, "Dark2")),
+              ylim = c(0, 10),
+              axis_param = list(
+                  at = c(0, 5, 10),
+                  labels = c("0", "5", "10"),
+                  side = "right",
+                  facing = "inside"
+      )))
+
+  rowmeans <- rowMeans(mat_WGBS_WT[, 90:200])
+  tmp <- order(rowmeans, decreasing=c(T), method="radix") 
+
+  meth_col_fun = colorRamp2(c(0, 100), c("white", "red"))
+  ht <- EnrichedHeatmap(mat_WGBS_WT, col = meth_col_fun, name = "Methylation", axis_name_rot = 90, top_annotation = top_L_WGBS,
+          column_title = "WT", row_order=tmp, use_raster=TRUE, show_row_names = FALSE)+
+        EnrichedHeatmap(mat_WGBS_hetero, col = meth_col_fun, name = "hetero", axis_name_rot = 90,
+          column_title = "hetero", use_raster=TRUE, show_heatmap_legend = FALSE, top_annotation=top_M_WGBS,  show_row_names = FALSE) +
+        EnrichedHeatmap(mat_WGBS_homo, col = meth_col_fun, name = "homo", axis_name_rot = 90,
+          column_title = "homo", use_raster=TRUE, show_heatmap_legend = FALSE, top_annotation=top_M_WGBS,  show_row_names = FALSE) +
+        EnrichedHeatmap(mat_WGBS_KO, col = meth_col_fun, name = "KO", axis_name_rot = 90,
+          column_title = "KO", use_raster=TRUE, show_heatmap_legend = FALSE, top_annotation=top_M_WGBS,  show_row_names = FALSE) 
+ return(ht)
+}
+```
+
+Heatmaps with cov > 4. 
+
+```{r, fig.width=8, fig.height=8, res=300, dev="png", eval=TRUE}
+extend <- 4000
+feat2do <- CGI
+#feat2do <- feat2do[seqnames(feat2do) %in% paste0("chr", 1:19)]
+#seqlevels(feat2do) <- seqlevelsInUse(feat2do)
+ht <- make_heatmap_groups(meth_gr, meth_gr_full, feat2do, "CGI")
+
+lgd = Legend(at = c("genes", "intergenic", "promoter"), 
+             title = "Element", 
+             type = "lines", 
+             legend_gp = gpar(col = cols_samplesLong))
+
+partition <- feat2do$type
+draw(ht,                                 #/ plot the heatmap from above 
+    main="Methylation", 
+    heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+    annotation_legend_side = "right",  #/ legend on the bottom side
+    split = partition, 
+    annotation_legend_list = list(lgd), 
+    #ht_gap = unit(c(2, 8, 8), "mm"),
+    padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)  
+```
+
+Other groups
+
+```{r, fig.width=8, fig.height=8, res=300, dev="png", eval=TRUE}
+draw(ht,                                 #/ plot the heatmap from above 
+    main="Methylation", 
+    heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+    annotation_legend_side = "right",  #/ legend on the bottom side
+    annotation_legend_list = list(lgd), 
+    padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)  
+```
+
+superenhancers heatmap
+
+```{r, fig.width=8, fig.height=8, res=300, dev="png", eval=TRUE}
+feat2do <- annotations[mcols(annotations)$type == "mm10_superEnhancer"]
+#feat2do <- feat2do[seqnames(feat2do) %in% paste0("chr", 1:19)]
+#seqlevels(feat2do) <- seqlevelsInUse(feat2do)
+ht <- make_heatmap_groups(meth_gr, meth_gr_full, feat2do, "superEnhancers")
+
+draw(ht,                                 #/ plot the heatmap from above 
+    main="Methylation", 
+    heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+    annotation_legend_side = "right",  #/ legend on the bottom side
+    #split = partition, 
+    annotation_legend_list = list(lgd), 
+    #ht_gap = unit(c(2, 8, 8), "mm"),
+    padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)  
+```
+
+Enhancers heatmap (From Atlas)
+
+
+```{r, fig.width=8, fig.height=8, res=300, dev="png", eval=TRUE}
+temp1 <- annotations[mcols(annotations)$type == "mm10_PoisedEnhancers_Atlas"]
+mcols(temp1)$type <- "active"
+temp2 <- annotations[mcols(annotations)$type == "mm10_ActiveEnhancers_Atlas"]
+mcols(temp2)$type <- "poised"
+feat2do <- c(temp1, temp2)
+#feat2do <- feat2do[seqnames(feat2do) %in% paste0("chr", 1:19)]
+#seqlevels(feat2do) <- seqlevelsInUse(feat2do)
+
+ht <- make_heatmap_groups(meth_gr, meth_gr_full, feat2do, "Enhancers")
+
+lgd = Legend(at = c("active", "poised"), 
+             title = "status", 
+             type = "lines", 
+             legend_gp = gpar(col = cols_samplesLong))
+
+draw(ht,                                 #/ plot the heatmap from above 
+    main="Methylation", 
+    heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+    annotation_legend_side = "right",  #/ legend on the bottom side
+    #split = partition, 
+    annotation_legend_list = list(lgd), 
+    #ht_gap = unit(c(2, 8, 8), "mm"),
+    padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)  
+gc()
+
+```
+
+
+
+```{r, fig.width=8, fig.height=8, res=300, dev="png", eval=TRUE}
+partition <- feat2do$type
+
+draw(ht,                                 #/ plot the heatmap from above 
+    main="Methylation", 
+    heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+    annotation_legend_side = "right",  #/ legend on the bottom side
+    split = partition, 
+    annotation_legend_list = list(lgd), 
+    #ht_gap = unit(c(2, 8, 8), "mm"),
+    padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)  
+```
+
+silencers. Yra du varianta: mESC ir ES-E14. Pirma ES-E14
+
+```{r, fig.width=8, fig.height=8, res=300, dev="png", eval=TRUE}
+feat2do <- annotations[mcols(annotations)$type == "mm10_Silencer_E14"]
+#feat2do <- feat2do[seqnames(feat2do) %in% paste0("chr", 1:19)]
+#seqlevels(feat2do) <- seqlevelsInUse(feat2do)
+ht <- make_heatmap_groups(meth_gr, meth_gr_full, feat2do, "silenceE14")
+lgd = Legend(at = c("genes", "intergenic", "promoter"), 
+             title = "Element", 
+             type = "lines", 
+             legend_gp = gpar(col = cols_samplesLong))
+draw(ht,                                 #/ plot the heatmap from above 
+    main="Methylation", 
+    heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+    annotation_legend_side = "right",  #/ legend on the bottom side
+   # split = partition, 
+    annotation_legend_list = list(lgd), 
+    #ht_gap = unit(c(2, 8, 8), "mm"),
+    padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)  
+```
+
+silencers mESC 
+
+```{r, fig.width=8, fig.height=8, res=300, dev="png", eval=TRUE}
+feat2do <- annotations[mcols(annotations)$type == "mm10_Silencer_mESC"]
+#feat2do <- feat2do[seqnames(feat2do) %in% paste0("chr", 1:19)]
+#seqlevels(feat2do) <- seqlevelsInUse(feat2do)
+ht <- make_heatmap_groups(meth_gr, meth_gr_full, feat2do, "silence_mESC")
+
+draw(ht,                                 #/ plot the heatmap from above 
+    main="Methylation", 
+    heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+    annotation_legend_side = "right",  #/ legend on the bottom side
+   # split = partition, 
+    annotation_legend_list = list(lgd), 
+    #ht_gap = unit(c(2, 8, 8), "mm"),
+    padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)  
+```
+
+CTCF (ENCODE project, ENCFF832AQF)  
+
+```{r, fig.width=8, fig.height=8, res=300, dev="png", eval=TRUE}
+feat2do <- annotations[mcols(annotations)$type == "mm10_CTCF"]
+#feat2do <- feat2do[seqnames(feat2do) %in% paste0("chr", 1:19)]
+#seqlevels(feat2do) <- seqlevelsInUse(feat2do)
+set.seed(12345)
+feat2do <- sample(feat2do, 5000)
+ht <- make_heatmap_groups(meth_gr, meth_gr_full, feat2do, "CTCF_mESC_mESC")
+draw(ht,                                 #/ plot the heatmap from above 
+    main="Methylation", 
+    heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+    annotation_legend_side = "right",  #/ legend on the bottom side
+   # split = partition, 
+    annotation_legend_list = list(lgd), 
+    #ht_gap = unit(c(2, 8, 8), "mm"),
+    padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)  
+```
+
+
+## Profiliukai 
+
+Cov > 4
+
+```{r, fig.width=6, fig.height=6}
+ext_target <- function(x){
+  upai <- x[grepl("u", x$V1)]
+  targetai <- x[grepl("t", x$V1)]
+  targ_mod <- rbind(targetai, targetai) %>% .[, nr := gsub("t", "", V1) %>% as.numeric] %>% setkey(., nr) %>% .[, nr := NULL] %>% .[, V1 := paste0("t", 1:.N)] %>% .[]
+  downai <- x[grepl("d", x$V1)]
+  return(rbind(upai, targ_mod, downai))
+}
+
+get_profile <- function(meth_th, meth_full, feat2do, vardas) {
+  if(!(file.exists(paste0(outdatadir, vardas, "_profile.RDS")))) {
+    extend <- 4000
+    mat_RRBS_homo <- normalizeToMatrix(meth_th, feat2do, value_column = "RRBS_homo_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100))
+    mat_RRBS_hetero <- normalizeToMatrix(meth_th, feat2do, value_column = "RRBS_hetero_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100))
+    mat_WGBS_hetero <- normalizeToMatrix(meth_th, feat2do, value_column = "WGBS_hetero_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100))
+    mat_WGBS_homo <- normalizeToMatrix(meth_th, feat2do, value_column = "WGBS_homo_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100))
+    mat_WGBS_KO <- normalizeToMatrix(meth_th, feat2do, value_column = "WGBS_KO_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100))
+    mat_WGBS_WT <- normalizeToMatrix(meth_th, feat2do, value_column = "WGBS_WT_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100)) 
+
+    saveRDS(list(mat_RRBS_homo, mat_RRBS_hetero, mat_WGBS_hetero, mat_WGBS_homo, mat_WGBS_KO, mat_WGBS_WT), paste0(outdatadir, vardas, "_profile.RDS"))
+    } 
+
+    if(!(file.exists(paste0(outdatadir, vardas, "_profile_full.RDS")))) {
+    mat_RRBS_homo_cov <- normalizeToMatrix(meth_full, feat2do, value_column = "RRBS_homo_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100))
+    mat_RRBS_hetero_cov <- normalizeToMatrix(meth_full, feat2do, value_column = "RRBS_hetero_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100))
+    mat_WGBS_hetero_cov <- normalizeToMatrix(meth_full, feat2do, value_column = "WGBS_hetero_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100))
+    mat_WGBS_homo_cov <- normalizeToMatrix(meth_full, feat2do, value_column = "WGBS_homo_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100))
+    mat_WGBS_KO_cov <- normalizeToMatrix(meth_full, feat2do, value_column = "WGBS_KO_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100))
+    mat_WGBS_WT_cov <- normalizeToMatrix(meth_full, feat2do, value_column = "WGBS_WT_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100)) 
+
+    saveRDS(list(mat_RRBS_homo_cov, mat_RRBS_hetero_cov, mat_WGBS_hetero_cov, mat_WGBS_homo_cov, mat_WGBS_KO_cov, mat_WGBS_WT_cov), paste0(outdatadir, vardas, "_profile_full.RDS"))}
+
+    tmp <- readRDS(paste0(outdatadir, vardas, "_profile.RDS"))
+    mat_RRBS_homo <- tmp[[1]]
+    mat_RRBS_hetero <- tmp[[2]]
+    mat_WGBS_hetero <- tmp[[3]]
+    mat_WGBS_homo <- tmp[[4]]
+    mat_WGBS_KO <- tmp[[5]]
+    mat_WGBS_WT <- tmp[[6]]
+
+
+    row_tvarka <- as.data.table(colMeans(mat_WGBS_WT[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target() %>% .[, V1]
+
+    df <- rbind(
+      as.data.table(colMeans(mat_WGBS_WT[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target() %>% .[, sample := "WT"],
+      as.data.table(colMeans(mat_WGBS_hetero[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target()%>% .[, sample := "hetero"],
+      as.data.table(colMeans(mat_WGBS_homo[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target()%>% .[, sample := "homo"], 
+      as.data.table(colMeans(mat_WGBS_KO[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target() %>% .[, sample := "KO"]
+      ) %>% 
+      as.data.table() %>% 
+      .[, V1 := factor(V1, levels=row_tvarka)] %>% 
+      .[, element := vardas]
+  return(df)   
+} 
+
+transkriptai <- annotations[annotations$type == "mm10_transcriptsCoding"]
+lncRNA <- annotations[annotations$type == "mm10_lncrna_gencode"]
+processed_pseudogene <- annotations[annotations$type == "mm10_processedPseudogene"]
+unprocessed_pseudogene <- annotations[annotations$type == "mm10_UnProcessedPseudogene"]
+
+tmp <- rbind(
+  get_profile(meth_gr, meth_gr_full, transkriptai, "transcripts"),
+  get_profile(meth_gr, meth_gr_full, lncRNA, "lncRNA"),
+  get_profile(meth_gr, meth_gr_full, processed_pseudogene, "processed_pseudogene"),
+  get_profile(meth_gr, meth_gr_full, unprocessed_pseudogene, "unprocessed_pseudogene")
+)
+ggplot(tmp, aes(V1, V2, group=sample, colour=sample)) +
+      geom_line(lwd=1.25) +
+      theme_Publication() +
+      theme_bw() +
+      ylab("Methylation") +
+      theme(axis.title.x=element_blank(), 
+            legend.position="bottom",
+            panel.grid.major=element_blank(),
+            panel.background=element_blank()
+            ) +
+      coord_cartesian(ylim=c(0, 100)) +
+      scale_x_discrete(breaks = c("u100", "d1"), labels = c("TSS", "TTS")) +
+      scale_colour_manual(values = cols_samplesLong, breaks = c("WT", "hetero", "homo", "KO")) +
+      facet_wrap(~element) +
+      geom_vline(xintercept=which(tmp$V1 == 'u100'), linetype="dotted", colour="grey") +
+      geom_vline(xintercept=which(tmp$V1 == 'd1'), linetype="dotted", colour="grey") 
+```
+
+Repeats, any CG
+
+```{r, fig.width=6, fig.height=4}
+i <- mcols(anotacijos)$Class == "Satellite"
+i[is.na(i)] <- FALSE
+elementas <- anotacijos[i,]
+j <- countOverlaps(elementas, meth_gr) 
+satelites_CG <- elementas[j > 0, ] %>% sample(., min(10000, sum(j>0)))
+satelites_CGR <- elementas[j > 4, ] %>% sample(., min(10000, sum(j>4)))
+
+i <- mcols(anotacijos)$Class == "Simple_repeat"
+i[is.na(i)] <- FALSE
+elementas <- anotacijos[i,]
+j <- countOverlaps(elementas, meth_gr) 
+Simple_repeat_CG <- elementas[j > 0, ] %>% sample(., min(10000, sum(j>0)))
+Simple_repeat_CGR <- elementas[j > 4, ] %>% sample(., min(10000, sum(j>4)))
+
+i <- mcols(anotacijos)$Class == "DNA"
+i[is.na(i)] <- FALSE
+elementas <- anotacijos[i,]
+j <- countOverlaps(elementas, meth_gr) 
+DNA_CG <- elementas[j > 0, ] %>% sample(., min(10000, sum(j>0)))
+DNA_CGR <- elementas[j > 4, ] %>% sample(., min(10000, sum(j>4)))
+
+i <- mcols(anotacijos)$Class == "LINE"
+i[is.na(i)] <- FALSE
+elementas <- anotacijos[i,]
+j <- countOverlaps(elementas, meth_gr) 
+LINE_CG <- elementas[j > 0, ] %>% sample(., min(10000, sum(j>0)))
+LINE_CGR <- elementas[j > 4, ] %>% sample(., min(10000, sum(j>4)))
+
+i <- mcols(anotacijos)$Class == "SINE"
+i[is.na(i)] <- FALSE
+elementas <- anotacijos[i,]
+j <- countOverlaps(elementas, meth_gr) 
+SINE_CG <- elementas[j > 0, ]  %>% sample(., min(10000, sum(j>0)))
+SINE_CGR <- elementas[j > 4, ] %>% sample(., min(10000, sum(j>4)))
+
+i <- mcols(anotacijos)$Class == "LTR"
+i[is.na(i)] <- FALSE
+elementas <- anotacijos[i,]
+j <- countOverlaps(elementas, meth_gr) 
+LTR_CG <- elementas[j > 0, ] %>% sample(., min(10000, sum(j>0)))
+LTR_CGR <- elementas[j > 4, ] %>% sample(., min(10000, sum(j>4)))
+
+
+tmp <- rbind(
+  get_profile(meth_gr, meth_gr_full, LINE_CG, "LINE"),
+  get_profile(meth_gr, meth_gr_full, SINE_CG, "SINE"),
+  get_profile(meth_gr, meth_gr_full, LTR_CG, "LTR"),
+  get_profile(meth_gr, meth_gr_full, DNA_CG, "DNA"),
+  get_profile(meth_gr, meth_gr_full, Simple_repeat_CG, "SimpleRepeats"),
+  get_profile(meth_gr, meth_gr_full, satelites_CG, "Satellite")
+)
+ggplot(tmp, aes(V1, V2, group=sample, colour=sample)) +
+      geom_line(lwd=1.25) +
+      theme_Publication() +
+      theme_bw() +
+      ylab("Methylation") +
+      theme(axis.title.x=element_blank(), 
+            legend.position="bottom",
+            panel.grid.major=element_blank(),
+            panel.background=element_blank()
+            ) +
+      coord_cartesian(ylim=c(0, 100)) +
+      scale_x_discrete(breaks = c("u100", "d1"), labels = c("TSS", "TTS")) +
+      scale_colour_manual(values = cols_samplesLong, breaks = c("WT", "hetero", "homo", "KO")) +
+      facet_wrap(~element) +
+      geom_vline(xintercept=which(tmp$V1 == 'u100'), linetype="dotted", colour="grey") +
+      geom_vline(xintercept=which(tmp$V1 == 'd1'), linetype="dotted", colour="grey") 
+```
+
+Similar, bet specific repeast 
+
+```{r, fig.width=6, fig.height=4}
+tmp <- rbind(
+  get_profile(meth_gr, meth_gr_full, LINE_CGR, "LINE_rich"),
+  get_profile(meth_gr, meth_gr_full, SINE_CGR, "SINE_rich"),
+  get_profile(meth_gr, meth_gr_full, LTR_CGR, "LTR_rich"),
+  get_profile(meth_gr, meth_gr_full, DNA_CGR, "DNA_rich"),
+  get_profile(meth_gr, meth_gr_full, Simple_repeat_CGR, "SimpleRepeats_rich"),
+  get_profile(meth_gr, meth_gr_full, satelites_CGR, "Satellite_rich")
+)
+ggplot(tmp, aes(V1, V2, group=sample, colour=sample)) +
+      geom_line(lwd=1.25) +
+      theme_Publication() +
+      theme_bw() +
+      ylab("Methylation") +
+      theme(axis.title.x=element_blank(), 
+            legend.position="bottom",
+            panel.grid.major=element_blank(),
+            panel.background=element_blank()
+            ) +
+      coord_cartesian(ylim=c(0, 100)) +
+      scale_x_discrete(breaks = c("u100", "d1"), labels = c("TSS", "TTS")) +
+      scale_colour_manual(values = cols_samplesLong, breaks = c("WT", "hetero", "homo", "KO")) +
+      facet_wrap(~element) +
+      geom_vline(xintercept=which(tmp$V1 == 'u100'), linetype="dotted", colour="grey") +
+      geom_vline(xintercept=which(tmp$V1 == 'd1'), linetype="dotted", colour="grey") 
+```

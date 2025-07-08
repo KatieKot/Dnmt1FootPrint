@@ -1,0 +1,153 @@
+```{r}
+library(pacman)
+p_load(data.table, dplyr, ggplot2, ComplexHeatmap, gridSVG, circlize, viridis, RColorBrewer, GenomicRanges, #ggpubr,
+EnrichedHeatmap, rtracklayer, ComplexHeatmap, patchwork, ggrepel, scales, stringr, foreach)
+#, splines, xlsx, ggh4x) 
+knitr::opts_chunk$set(dev='gridSVG', res=300, fig.height=4, fig.width=4, fig.align = "center")
+#knitr::opts_chunk$set(res=300, fig.height=4, fig.width=4, fig.align = "center")
+options(scipen=2)
+dir.create(outdatadir, recursive=TRUE)
+source("code/common.R")
+samples <- c("WT", "Het", "Hom")
+cols_samples  <- c( 
+                        "Het"="#FF0000", 
+                        "WGBS_WT_met"="#364B9A",
+                        "WGBS_hetero_met"="#4A7BB7",
+                        "WGBS_homo_met"="#98CAE1",
+                        "WGBS_KO_met"="#C2E4EF",                       
+                        "KO"="#606060"
+                        )
+```
+
+# Figure 3c {.tabset}
+
+## TOP10 enrichment  
+
+
+```{r, fig.width=9, fig.height=6}
+d1 <- readRDS(paste0("output/code/WGBS_RRBS/Enrichment/", "Enrichment_CG.RDS")) %>% 
+  .[type == "Het",]
+
+d2 <- readRDS(paste0("output/code/WGBS_RRBS/Add05/", "Enrichment_CG.RDS")) %>% 
+  .[Sample == "WGBS_hetero_met", ] %>% 
+  .[Pval <= 0.05, ] %>%
+  .[, .(Sample, Elem, Enri)] %>% 
+  setnames("Sample", "type")
+
+dt <- rbind(d1, d2)
+
+tvarka <- dt %>% 
+  .[type == "Het", ] %>%
+  .[, .(Enri, Elem)] %>%  
+  .[, lapply(.SD, min), by="Elem"] %>% 
+  setorder(., Enri) %>% 
+  .[, Elem]
+
+p <- dt %>% 
+  .[, Elem := factor(Elem, levels=tvarka)] %>%
+  ggplot(aes(Enri, Elem, fill=type)) +
+    geom_jitter(shape=21, size=3, height = 0, width=0.0, seed = 1987) +
+    #geom_point(shape=21, size=3) +
+    theme_Publication() +
+    coord_cartesian(xlim=c(0, 2)) +
+    ylab("Odds ration") +
+    xlab("Element") +
+    scale_fill_manual(values=cols_samples, guide = guide_legend(override.aes = list(size = 5) ))  +
+    theme_Publication()
+
+p 
+```
+
+Figure
+
+
+```{r, fig.height=7, fig.width=6}
+d1 <- readRDS(paste0("output/code/WGBS_RRBS/Enrichment/", "promoterEnri.RDS")) 
+d1 <- d1@compareClusterResult %>%
+  as.data.table() %>%
+  .[Cluster == "Hetero", ] %>%
+  .[, Cluster := "Het"]
+
+dx <- readRDS(paste0("output/code/WGBS_RRBS/Add05/", "promoterEnri_25.RDS")) 
+d2 <- dx@compareClusterResult %>%
+  as.data.table() %>%
+  .[Cluster == "Hetero", ] %>% 
+  .[, Cluster := "WGBS_hetero_met"]
+
+d3 <- dx@compareClusterResult %>%
+  as.data.table() %>%
+  .[Cluster == "WT", ] %>% 
+  .[, Cluster := "WGBS_WT_met"]
+
+dt <- rbind(d1, d2, d3, fill=TRUE)
+dt <- dt[ID %in% names(dt$ID %>% table)[(dt$ID %>% table) == 3], ]
+
+tvarka <- dt %>% 
+  .[, .(qvalue, Description)] %>%  
+  .[, lapply(.SD, min), by="Description"] %>% 
+  setorder(., -qvalue) %>% 
+  .[, Description]
+maxas <- ceiling(max(log10(dt$qvalue)*(-1)))
+
+dt %>% 
+  as.data.table() %>% 
+  .[, Description := factor(Description, levels=tvarka)] %>% 
+  .[, qverte := log10(qvalue)*(-1)] %>% 
+  ggplot(aes(qverte, Description, fill=Cluster, size=Count)) +
+    geom_point(shape=21) +
+    coord_cartesian(xlim=c(0.25, maxas)) +
+    scale_fill_manual(values=cols_samples, guide = guide_legend(override.aes = list(size = 5) ) ) +
+    scale_y_discrete(labels = function(x) str_wrap(x, width = 40)) +
+    xlab("-1*log10(q-value)") +
+    theme_Publication() + 
+    theme(legend.position="bottom", 
+          legend.box="vertical", 
+          legend.margin=margin())
+```
+
+
+
+```{r, fig.height=7, fig.width=6}
+d1 <- readRDS(paste0("output/code/WGBS_RRBS/Enrichment/", "promoterEnri.RDS")) 
+d1 <- d1@compareClusterResult %>%
+  as.data.table() %>%
+  .[Cluster == "Hetero", ] %>%
+  .[, Cluster := "Het"]
+
+dx <- readRDS(paste0("output/code/WGBS_RRBS/Add05/", "promoterEnri_25.RDS")) 
+d2 <- dx@compareClusterResult %>%
+  as.data.table() %>%
+  .[Cluster == "Hetero", ] %>% 
+  .[, Cluster := "WGBS_hetero_met"]
+
+d3 <- dx@compareClusterResult %>%
+  as.data.table() %>%
+  .[Cluster == "WT", ] %>% 
+  .[, Cluster := "WGBS_WT_met"]
+
+dt <- rbind(d1, d2, fill=TRUE)
+dt <- dt[ID %in% names(dt$ID %>% table)[(dt$ID %>% table) == 2], ]
+
+tvarka <- dt %>% 
+  .[, .(qvalue, Description)] %>%  
+  .[, lapply(.SD, min), by="Description"] %>% 
+  setorder(., -qvalue) %>% 
+  .[, Description]
+maxas <- ceiling(max(log10(dt$qvalue)*(-1)))
+
+dt %>% 
+  as.data.table() %>% 
+  .[, Description := factor(Description, levels=tvarka)] %>% 
+  .[, qverte := log10(qvalue)*(-1)] %>% 
+  ggplot(aes(qverte, Description, fill=Cluster, size=Count)) +
+    geom_point(shape=21) +
+    coord_cartesian(xlim=c(0.25, maxas)) +
+    scale_fill_manual(values=cols_samples, guide = guide_legend(override.aes = list(size = 5) ) ) +
+    scale_y_discrete(labels = function(x) str_wrap(x, width = 40)) +
+    xlab("-1*log10(q-value)") +
+    theme_Publication() + 
+    theme(legend.position="bottom", 
+          legend.box="vertical", 
+          legend.margin=margin())
+```
+

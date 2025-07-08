@@ -1,0 +1,71 @@
+```{r}
+library(pacman)
+p_load(data.table, dplyr, ggplot2, rtracklayer, RColorBrewer, scales, foreach, 
+viridis, annotatr, stringr)
+options(scipen=999)
+knitr::opts_chunk$set(fig.width=9, fig.height=7)
+dir.create(outdatadir, recursive=TRUE)
+source("./code/common.R", chdir = FALSE)
+
+get_data <- function(samplas, wdir, outdatadir, ats=3) {
+  reads <- readRDS(paste0(wdir, "output/", samplas, "/reads_CG.RDS"))
+  rezu <- c(mcols(reads[strand(reads) == "+"])$dist2bestCG, (mcols(reads[strand(reads) == "-"])$dist2bestCG * (-1))) %>% table 
+  return(rezu)
+  } 
+```
+
+###############################################################################
+###############################################################################
+################### Mutants
+###############################################################################
+###############################################################################
+
+```{r}
+# Dnmt1 TopSEQ
+configs <- fread("data_prep/config_torrent.yaml", header=FALSE) 
+wdir <- configs[V1 == "workdir:", V2]
+
+samplesInfo <- fread("input/samples_info.txt") %>% 
+  .[USE == "E2", ] %>% 
+  .[, replicate := str_extract(ID, "R.$")] %>% 
+  .[, condition := gsub("_R[0-9]", "", ID)] %>% 
+  .[ID != "Het_R1", ]
+samples2do <- samplesInfo$ID
+samples2do_m <- c("WT", "Het", "Hom")
+
+if(!file.exists(paste0(outdatadir, "mutantai_dist2CG.RDS"))) {
+  #if(!file.exists(paste0(outdatadir, "dCG.RDS"))) {
+
+  d <- foreach(i=samples2do) %dopar% {
+  return(get_data(i, wdir, outdatadir))}
+  names(d) <- samples2do
+  saveRDS(d, paste0(outdatadir, "mutantai_dist2CG.RDS"))
+} 
+```
+
+###############################################################################
+###############################################################################
+################### Diferenciacion
+###############################################################################
+###############################################################################
+
+```{r}
+configs <- fread("data_prep/config_torrent.yaml", header=FALSE) 
+wdir <- configs[V1 == "workdir:", V2]
+
+samplesInfo <- fread("input/samples_info.txt") %>% 
+  .[USE == "E4", ] %>% 
+  .[, replicate := str_extract(ID, "R.$")] %>% 
+  .[, condition := gsub("_R[0-9]", "", ID)]
+samples2do <- samplesInfo$ID
+samples2do_m <- c("Ctr2i", "D0azide", "D2azide", "D4azide", "D8azide")
+
+if(!file.exists(paste0(outdatadir, "4taskai_dist2CG.RDS"))) {
+  #if(!file.exists(paste0(outdatadir, "dCG.RDS"))) {
+
+  d <- foreach(i=samples2do) %dopar% {
+  return(get_data(i, wdir, outdatadir))}
+  names(d) <- samples2do
+  saveRDS(d, paste0(outdatadir, "4taskai_dist2CG.RDS"))
+} 
+```

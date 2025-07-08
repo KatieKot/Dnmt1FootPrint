@@ -1,0 +1,788 @@
+```{r}
+library(pacman)
+p_load(data.table, dplyr, ggplot2, ComplexHeatmap, gridSVG, circlize, viridis, RColorBrewer, GenomicRanges, ggpubr,
+EnrichedHeatmap, rtracklayer, ComplexHeatmap, patchwork, ggrepel, scales, stringr, foreach, splines, xlsx, ggh4x) 
+knitr::opts_chunk$set(dev='gridSVG', res=300, fig.height=4, fig.width=4, fig.align = "center")
+#knitr::opts_chunk$set(res=300, fig.height=4, fig.width=4, fig.align = "center")
+options(scipen=2)
+dir.create(outdatadir, recursive=TRUE)
+source("code/common.R")
+samples <- c("WT", "Het", "Hom")
+```
+
+# Figuros {.tabset}
+
+## Part I 
+
+```{r}
+d <- readRDS("./output/code/WGBS_RRBS/TOP_Stat/data_TargetCov.RDS")
+d %>% 
+  .[rn %in% samples, ] %>% 
+  .[, rn := factor(rn, levels=samples)] %>% 
+  ggplot(aes(rn, value, fill=rn)) + 
+    geom_col(colour="black") +
+    theme_Publication() +
+    ylab("coverage") +
+    scale_fill_manual(values=cols_samples, name="sample") +
+    theme(axis.title.x=element_blank(), 
+          legend.position="bottom")
+```
+
+
+
+```{r, fig.width=9}
+d <- readRDS("./output/code/WGBS_RRBS/TOP_Stat/data_TargetNo.RDS")
+nCG <- 21867550
+d <- d %>% 
+  .[, frac := value / nCG] %>% 
+  .[, mutantas := gsub("_R.", "", rn)]
+
+
+p1 <- d[!rn %in% samples, ] %>%  
+  .[, rn := factor(rn, levels=c("WT_R1", "WT_R2", "WT_R3", "Het_R2", "Het_R3", "Het_R4", "Hom_R1", "Hom_R2", "Hom_R3"))] %>% 
+  ggplot(aes(rn, value, fill=mutantas, label=paste0(round(value/1000000, 2), "M"))) +
+  #  geom_col(data=d[rn %in% samples, ], aes(mutantas, frac, fill=rn)) + 
+  #  geom_point() + 
+    geom_col(colour="black") +
+    geom_text_repel(point.size = NA) +   
+    ylab("Identified CpG, M") +
+    scale_fill_manual(values=cols_samples, name="sample") +
+    theme_Publication() +
+    scale_y_continuous(labels = label_number(suffix = " M", scale = 1e-6)) +
+    theme(axis.title.x = element_blank(), 
+          axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p2 <- d %>% 
+  .[rn %in% samples, ] %>% 
+  .[, rn := factor(rn, levels=samples)] %>% 
+  ggplot(aes(rn, value, fill=mutantas, label=paste0(round(value/1000000, 2), "M"))) +
+    geom_col(colour="black") +
+    geom_text_repel(point.size = NA) +   
+    ylab("Identified CpG, M") +
+    scale_fill_manual(values=cols_samples, name="sample") +
+    theme_Publication() +
+    scale_y_continuous(labels = label_number(suffix = " M", scale = 1e-6)) +
+    theme(axis.title.x = element_blank(), 
+          axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+(p1 | p2) + plot_layout(guides = "collect") & theme(legend.position = 'bottom')
+```
+
+
+```{r, fig.width=5, fig.height=5}
+d <- readRDS("./output/code/WGBS_RRBS/TOP_Stat/data_heatmapCor.RDS")
+tmp_table <- d[[1]]
+column_ha = HeatmapAnnotation(replicate = colnames(tmp_table) %>% strsplit(., "_") %>% sapply(., `[`, 2), 
+                              condition = colnames(tmp_table) %>% strsplit(., "_") %>% sapply(., `[`, 1),
+                              col = list(replicate = c("R1" = brewer.pal(n=9,"Blues")[2], "R2" = brewer.pal(n=9,"Blues")[4], "R3" = brewer.pal(n=9,"Blues")[6], "R4"=brewer.pal(n=9,"Blues")[8]), 
+                                         condition = c("Het" = "#FF0000", "Hom" = "#008000", "WT" = "#070D0D")),
+                              show_legend = c(TRUE, TRUE)           
+                              )
+
+row_ha = rowAnnotation(replicate = colnames(tmp_table) %>% strsplit(., "_") %>% sapply(., `[`, 2), 
+                       condition = colnames(tmp_table) %>% strsplit(., "_") %>% sapply(., `[`, 1),
+                       col = list(replicate = c("R1" = brewer.pal(n=9,"Blues")[2], "R2" = brewer.pal(n=9,"Blues")[4], "R3" = brewer.pal(n=9,"Blues")[6], "R4"=brewer.pal(n=9,"Blues")[8]), 
+                                  condition = c("Het" = "#FF0000", "Hom" = "#008000", "WT" = "#070D0D")),
+                       show_legend = c(FALSE, FALSE)           
+                              )
+
+library(circlize)
+col_fun = colorRamp2(c(-0, 0.5, 1), viridis(3))
+
+
+ht <- Heatmap(tmp_table, name="Pearson", 
+          rect_gp = gpar(col = "black", lwd = 0.5), 
+          top_annotation = column_ha, 
+          right_annotation = row_ha,
+          show_row_names=FALSE,
+          show_column_names=FALSE,
+          col=col_fun,
+          heatmap_legend_param = list(
+                                      legend_direction = "horizontal"),
+          cell_fun = function(j, i, x, y, w, h, col) { # add text to each grid
+          grid.text(round(tmp_table[i, j], 2), x, y, gp=gpar(fontsize = 8))}
+          )
+
+draw(ht, heatmap_legend_side = "bottom")
+```
+
+```{r, fig.width=6}
+d <- readRDS("./output/code/WGBS_RRBS/TOP_Stat/data_perChromCoverage.RDS")
+
+ggplot(d, aes(chr, coverage, fill=sample)) +
+  geom_boxplot(outlier.shape=NA) +
+  theme_Publication() +
+  coord_cartesian(ylim=c(0, 35)) +
+  ylab("coverage, fold") +
+  scale_fill_manual(values=cols_samples, name="sample") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), 
+        axis.title.x=element_blank(),
+        legend.position="bottom")
+
+```
+
+```{r, fig.width=7}
+d <- readRDS(paste0("output/code/WGBS_RRBS/CorAnalysis/data_CorOnElements.RDS"))
+
+ggplot(d, aes(element, meanas, fill=sample)) +
+  geom_col(position="dodge", colour="black") +
+  theme_bw() +
+  ylab("Pearson cor. mean") +
+  scale_fill_manual(values=cols_samples, name="sample") +
+  #geom_errorbar(aes(ymin=meanas-sd/2, ymax=meanas+sd/2), width=.2,
+  #               position=position_dodge(.9), colour="black") +
+
+  geom_errorbar(aes(ymin=meanas, ymax=meanas+sd/2), width=.2,
+                 position=position_dodge(.9), colour="black") +
+  coord_cartesian(ylim=c(0, 1)) +                 
+  theme(axis.title.x=element_blank(),
+        legend.position="bottom")
+```
+
+```{r, fig.height=7, fig.width=6}
+d <- readRDS(paste0("output/code/WGBS_RRBS/Enrichment/", "EnrichmentPromoters_selected.RDS"))
+
+tvarka <- d %>% 
+  .[, .(Cluster, qvalue, Description)] %>%  
+  .[, lapply(.SD, min), by="Description"] %>% 
+  setorder(., -qvalue) %>% 
+  .[, Description]
+maxas <- ceiling(max(log10(d$qvalue)*(-1)))
+
+d %>% 
+  as.data.table() %>% 
+  .[, Description := factor(Description, levels=tvarka)] %>% 
+  .[, qverte := log10(qvalue)*(-1)] %>% 
+  ggplot(aes(qverte, Description, fill=Cluster, size=Count)) +
+    geom_point(shape=21) +
+    coord_cartesian(xlim=c(0.25, maxas)) +
+    scale_fill_manual(values=cols_samplesLong, guide = guide_legend(override.aes = list(size = 5) ) ) +
+    scale_y_discrete(labels = function(x) str_wrap(x, width = 40)) +
+    xlab("-1*log10(q-value)") +
+    theme_Publication() + 
+    theme(legend.position="bottom", 
+          legend.box="vertical", 
+          legend.margin=margin())
+```
+
+
+```{r, fig.width=9, fig.height=6}
+d <- readRDS(paste0("output/code/WGBS_RRBS/Enrichment/", "Enrichment_CG.RDS"))
+
+p1 <- ggplot(d, aes(Enri, Elem, fill=type)) +
+  geom_jitter(shape=21, size=3, height = 0, width=0.0, seed = 1987) +
+  #geom_point(shape=21, size=3) +
+  theme_Publication() +
+  coord_cartesian(xlim=c(0, 1.5)) +
+  ylab("Odds ration") +
+  xlab("Element") +
+  scale_fill_manual(values=cols_samples, guide = guide_legend(override.aes = list(size = 5) ))  +
+  theme_Publication()
+
+p2 <- ggplot(d, aes(Enri, Elem, fill=type)) +
+  geom_jitter(shape=21, size=4, height = 0, width=0.0, seed = 1987) +
+  #geom_point(shape=21, size=3) +
+  coord_cartesian(xlim=c(0, 1.5)) +
+  theme_Publication() +
+  ylab("Odds ration") +
+  xlab("Element") +
+  scale_fill_manual(values=cols_samples, guide = guide_legend(override.aes = list(size = 5) ))  +
+  theme_Publication()
+
+p1 | p2
+```
+
+```{r}
+d <- readRDS(paste0("output/code/Dnmt_2/GetDist2CG/", "mutantai_dist2CG.RDS"))
+
+atstumai <- foreach(i=names(d), .combine="rbind") %do% {
+  d[[i]] %>% 
+    as.data.table %>% 
+    setnames(., c("V1", "N")) %>% 
+    .[, grupe := "KITA"] %>% 
+    as.data.table %>% 
+    .[, V1 := as.numeric(V1)] %>% 
+    .[V1 ==  -1, grupe := "-1"] %>% 
+    .[V1 == -2, grupe := "-2"] %>% 
+    .[V1 == -3, grupe := "-3"] %>% 
+    .[V1 == -4, grupe := "-4"] %>%
+    .[V1 == -5, grupe := "-5"] %>% 
+    .[V1 == -6, grupe := "-6"] %>% 
+    .[V1 == -7, grupe := "-7"] %>% 
+    .[V1 < -7, grupe := "<=-8"] %>% 
+    .[V1 == 1, grupe := "1"] %>% 
+    .[V1 == 2, grupe := "2"] %>% 
+    .[V1 == 3, grupe := "3"] %>% 
+    .[V1 == 4, grupe := "4"] %>%
+    .[V1 == 5, grupe := "5"] %>% 
+    .[V1 == 6, grupe := "6"] %>% 
+    .[V1 == 7, grupe := "7"] %>% 
+    .[V1 > 7, grupe := ">=8"] %>% 
+    .[V1 == 0, grupe := 0] %>% 
+    .[, lapply(.SD, sum), by="grupe", .SDcols="N"] %>% 
+    .[, grupe := factor(grupe, levels=c("<=-8", "-7", "-6", "-5",  "-4", "-3", "-2", "-1", "0", "1", "2", "3", "4", "5", "6", "7", ">=8"))] %>% 
+    .[, name := i] %>% 
+    .[]
+}
+
+total <- atstumai %>% 
+  as.data.table() %>% 
+  .[, condition := strsplit(name, "_") %>% sapply(., `[`, 1)] %>% 
+  .[, lapply(.SD, sum), by=c("condition"), .SDcols="N"] %>% setnames(., c("condition", "total"))
+
+atstumai %>%  
+  as.data.table() %>% 
+  .[, condition := strsplit(name, "_") %>% sapply(., `[`, 1)] %>% 
+  .[, lapply(.SD, sum), by=c("condition", "grupe"), .SDcols="N"] %>% 
+  merge(., total, by="condition") %>% 
+  .[, frac := N/total] %>% 
+  ggplot(aes(grupe, frac, colour=condition, group=condition)) +
+    geom_point() +
+    geom_line() +
+    theme_bw() +
+    scale_colour_brewer(palette="Dark2") +
+    theme(legend.position="bottom") +
+    labs(color="Sample") +
+    ylab("Fraction of reads, %") +
+    scale_y_continuous(labels = scales::percent) +
+    xlab("Distance to CpG, bp") +
+    scale_colour_manual(values=cols_samples)
+```
+
+
+## Profiles I 
+    
+
+```{r, fig.width=7}
+get_barPlot_bisulfite <- function(pos2do, bisulfite, namas, toREM="", samples2do=bisulfite_samples) {
+  d <- foreach(i=bisulfite_samples, .combine="rbind") %do% {
+    tmp_cov <- bisulfite[queryHits(findOverlaps(bisulfite, pos2do))]
+    ivertis <- tmp_cov %>% 
+      as.data.table() %>% 
+      .[, i, with=FALSE]  %>% 
+      unlist()
+
+    data.table(mod=ivertis, meginys=i, pos=paste0("pos", 1:length(tmp_cov))) %>% 
+      .[!(pos %in% toREM), ] %>% 
+      .[, pos := paste0("pos", 1:.N)] %>% 
+      .[, pos := factor(pos, levels=paste0("pos", 1:.N))] %>% 
+      .[] 
+    }
+  
+  fig <- d %>% 
+    as.data.table() %>% 
+    .[, meginys := factor(meginys, levels=bisulfite_samples)] %>% 
+    .[!(pos %in% c("pos4", "pos26", "pos28", "pos48")), ] %>% 
+    .[, meginys := gsub("WGBS_", "", meginys) %>% gsub("_met", "", .)] %>% 
+    ggplot(aes(pos, mod, fill=meginys)) +
+      geom_col(colour="black", width=0.75) +
+      theme_bw() +
+      ylab("Modified CpGs, reads") +
+      facet_wrap(~meginys, ncol=1) +
+      theme(axis.ticks.x = element_blank(), 
+            panel.border = element_blank(), 
+            #panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(), 
+            axis.line = element_line(colour = "black"),
+            strip.text = element_text(colour = 'black'),
+            #strip.background =element_rect(fill=NA),
+            strip.background = element_blank(),
+            legend.position="bottom",
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank()
+                ) +
+      geom_smooth(aes(group="1"), 
+            se=F,
+            method="glm",
+            formula=y~ns(x, 8),
+            #family=gaussian(link="log"),
+            method.args = list(family = "gaussian"),
+            show_guide = FALSE, 
+            lwd=0.7) +
+      coord_cartesian(ylim=c(0, 100)) +            
+      scale_fill_manual(values=cols_samplesLong, name="sample") +         
+      ggtitle(namas)                                
+  return(fig)         
+} 
+
+get_barplot_topSeq <- function(pos2do, coverages_gr_rep, namas, toREM="") {
+  d <- foreach(i=samples2do, .combine="rbind") %do% {
+    tmp_cov <- coverages_gr_rep[queryHits(findOverlaps(coverages_gr_rep, pos2do))]
+    vidurkiai <- tmp_cov %>% 
+      as.data.table() %>% 
+      .[, samplesInfo[condition == i, NAME], with=FALSE] %>% 
+      rowMeans
+    nuokrypiai <- tmp_cov %>% 
+      as.data.table() %>% 
+      .[, samplesInfo[condition == i, NAME], with=FALSE] %>% 
+      apply(., 1, sd)
+    data.table(meanas=vidurkiai, nuokrypiai, meginys=i, pos=paste0("pos", 1:length(vidurkiai))) %>% 
+      .[, pos := factor(pos, levels=paste0("pos", 1:length(vidurkiai)))] %>% 
+      .[] 
+  }
+
+  fig <- d %>% as.data.table() %>% 
+      .[, apacia := meanas - (nuokrypiai/2)] %>% 
+      .[, virsus := meanas + (nuokrypiai/2)] %>%  
+      .[!(pos %in% c("pos4", "pos26", "pos28", "pos48")), ] %>% 
+      ggplot(aes(pos, meanas, fill=meginys)) +
+        geom_col(colour="black", width=0.75) +
+        geom_errorbar(aes(ymin = apacia, ymax = virsus), width = 0.2) +
+        theme_bw() +
+        ylab("Modified CpGs, reads") +
+        facet_wrap(~meginys, ncol=1) +
+        theme(axis.ticks.x = element_blank(), 
+                panel.border = element_blank(), 
+                #panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank(), 
+                axis.line = element_line(colour = "black"),
+                strip.text = element_text(colour = 'black'),
+                #strip.background =element_rect(fill=NA),
+                strip.background = element_blank(),
+                legend.position="bottom",
+                axis.title.x = element_blank(),
+                axis.text.x = element_blank()
+                ) +
+        geom_smooth(aes(group="1"), 
+                se=F,
+                method="glm",
+                formula=y~ns(x, 6),
+                #family=gaussian(link="log"),
+                method.args = list(family = "gaussian"),
+                show_guide = FALSE, 
+                lwd=0.7) +
+      scale_fill_manual(values=cols_samples, name="sample") +                     
+      ggtitle(namas)                                
+  return(fig)                        
+} 
+
+samplesInfo <- fread("input/samples_info.txt") %>% 
+  .[USE == "E2", ] %>% 
+  .[, replicate := str_extract(ID, "R.$")] %>% 
+  .[, condition := gsub("_R[0-9]", "", ID)] %>% 
+  .[ID != "Het_R1", ]  
+samples2do <- c("Het", "Hom")
+
+
+met_gr <- readRDS(paste0("output/code/PrepAllData//WGBS_vs_RRBS_data.RDS")) %>% .[["methylation_gr_th"]]
+met_gr <- met_gr[seqnames(met_gr) %in% paste0("chr", c(1:19, "X", "Y"))]
+bisulfite_samples <- c("WGBS_WT_met", "WGBS_hetero_met", "WGBS_homo_met", "WGBS_KO_met")
+p1 <- get_barPlot_bisulfite(makeGRangesFromDataFrame(data.frame(chr="chr11", start=3192997-1, end=3193699+1)), met_gr, "Sfi1", toREM=c("pos3", "pos23", "pos25", "pos45"))
+p2 <- get_barPlot_bisulfite(makeGRangesFromDataFrame(data.frame(chr="chr15", start=98256832-1, end=98257066+1)), met_gr, "H1fnt")
+
+pg <- ggplot_build(p2)
+dd <- pg$data[[1]] %>% 
+  as.data.table() %>% 
+  .[, meginys := "XX"] %>% 
+  .[PANEL == 1, meginys := "hetero"] %>% 
+  .[PANEL == 2, meginys := "homo"] %>% 
+  .[PANEL == 3, meginys := "KO"] %>% 
+  .[PANEL == 4, meginys := "WT"] %>% 
+  .[, .(x, y, meginys)]
+
+write.xlsx(dd, 
+           paste0("report/out_html/", "WGBS_profiliai.xlsx"), 
+           sheetName="H1fnt",
+           append=FALSE)    
+
+
+dd[meginys == "KO"] %>% 
+  ggplot(aes(x, y)) +
+    geom_col() 
+
+pg <- ggplot_build(p1)
+dd <- pg$data[[1]] %>% 
+  as.data.table() %>% 
+  .[, meginys := "XX"] %>% 
+  .[PANEL == 1, meginys := "hetero"] %>% 
+  .[PANEL == 2, meginys := "homo"] %>% 
+  .[PANEL == 3, meginys := "KO"] %>% 
+  .[PANEL == 4, meginys := "WT"] %>% 
+  .[, .(x, y, meginys)]
+  
+write.xlsx(dd, 
+           paste0("report/out_html/", "WGBS_profiliai.xlsx"), 
+           sheetName="Sfi1",
+           append=TRUE)    
+
+
+p_BS <- (p1 | p2) +  plot_layout(guides = "collect", widths = c(3, 1.1)) & theme(legend.position = 'bottom')
+
+coverages_gr_rep <- readRDS("./output/code/PrepAllData/mutantai_coverages2useTopData.RDS") %>% 
+  .[, end := start] %>% 
+  .[, c("chr", "start", "end", "Het_R2", "Het_R3", "Het_R4", "Hom_R1", "Hom_R2", "Hom_R3"), with=FALSE] %>% 
+  .[chr %in% paste0("chr", c(1:19, "X", "Y"))] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+p1 <- get_barplot_topSeq(makeGRangesFromDataFrame(data.frame(chr="chr11", start=3192997-1, end=3193699+1)), coverages_gr_rep, "Sfi1", toREM=c("pos3", "pos23", "pos25", "pos45"))
+p2 <- get_barplot_topSeq(makeGRangesFromDataFrame(data.frame(chr="chr15", start=98256832-1, end=98257066+1)), coverages_gr_rep, "H1fnt") + coord_cartesian(ylim=c(0, 25))
+
+p_TOP <- (p1 | p2) + plot_layout(guides = "collect", widths = c(3, 1.1)) & theme(legend.position = 'bottom')
+
+p_BS
+p_TOP
+```
+
+## Profiles II 
+
+
+```{r, fig.width=8, fig.height=15}
+temp <- readRDS(paste0("output/code/WGBS_RRBS/Profiles/Profiles_matrix_elements.RDS"))
+temp %>% 
+  .[!(element %in% c("ActiveEnhancerFantom", "ActiveEnhancerAtlas", "EnhancersFantom", "PoisedEnhacerAtlas", "PoisedEnhacerFantom")), ] %>% 
+  .[, technology := "TopSeq"] %>% 
+  .[grepl("RRBS", sample), technology := "RRBS"] %>% 
+  .[grepl("WGBS", sample), technology := "WGBS"] %>% 
+  .[, samplas := "Kita"] %>% 
+  .[grepl("Het|het", sample),  samplas := "hetero"] %>% 
+  .[grepl("Hom|homo", sample),  samplas := "homo"] %>%  
+  .[grepl("WT", sample),  samplas := "WT"] %>%  
+  .[sample != "WGBS_KO_met"] %>% 
+  .[sample != "WGBS_WT_met"] %>% 
+  .[!grepl("WT", sample), ] %>% 
+ggplot(aes(V1, V2, group=samplas, colour=samplas)) +
+      geom_line(size=0.5, alpha=0.75, lwd=1.25) +
+      theme_Publication() +
+      theme_bw() +
+      ylab("Methylation/TopSeq*100") +
+      theme(axis.title.x=element_blank(), 
+            legend.position="bottom",
+            panel.grid.major=element_blank(),
+            panel.background=element_blank(),
+            strip.text.y.right = element_text(angle = 0)
+            ) +
+      coord_cartesian(ylim=c(0, 100)) +
+      scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
+      scale_colour_manual(values = cols_samplesLong) +
+      facet_grid(vars(element), vars(technology)) +
+      geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
+      geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
+```
+
+
+
+
+```{r, fig.width=8, fig.height=12}
+temp_reps <- readRDS(paste0("output/code/WGBS_RRBS/Profiles/Profiles_matrix_repeats.RDS"))
+temp_reps %>% 
+  .[, technology := "TopSeq"] %>% 
+  .[grepl("RRBS", sample), technology := "RRBS"] %>% 
+  .[grepl("WGBS", sample), technology := "WGBS"] %>% 
+  .[, samplas := "Kita"] %>% 
+  .[grepl("Het|het", sample),  samplas := "hetero"] %>% 
+  .[grepl("Hom|homo", sample),  samplas := "homo"] %>%  
+  .[grepl("WT", sample),  samplas := "WT"] %>%  
+  .[sample != "WGBS_KO_met"] %>% 
+  .[sample != "WGBS_WT_met"] %>% 
+  .[!grepl("WT", sample), ] %>% 
+ggplot(aes(V1, V2, group=samplas, colour=samplas)) +
+      geom_line(size=0.5, alpha=0.75, lwd=1.25) +
+      theme_Publication() +
+      theme_bw() +
+      ylab("Methylation/TopSeq*100") +
+      theme(axis.title.x=element_blank(), 
+            legend.position="bottom",
+            panel.grid.major=element_blank(),
+            panel.background=element_blank()
+            ) +
+      coord_cartesian(ylim=c(0, 100)) +
+      scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
+      scale_colour_manual(values = cols_samplesLong) +
+      facet_grid(vars(element), vars(technology)) +
+      geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
+      geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
+```
+
+## Heatmap 
+
+```{r, fig.width=12, fig.height=9}
+feat2do <- annotations[mcols(annotations)$type == "mm10_cpg_islands"]
+extend=4000
+sortL=85
+sortR=200
+RDS <- "CGI_heatmap"
+
+  if(!file.exists(paste0(outdatadir, RDS, ".RDS"))) {
+
+    samples2do_TOP <- c("Het", "Hom") 
+    coverages <- readRDS("./output/code/PrepAllData/mutantai_coverages2useTopData.RDS")
+    coverages <- coverages %>% 
+      .[WT>0, WT := 1] %>% 
+      .[Het>0, Het := 1] %>% 
+      .[Hom>0, Hom := 1] %>% 
+      .[, end := start] %>% 
+      .[, c("chr", "start", "end", samples2do_TOP), with=FALSE] %>% 
+      .[chr %in% paste0("chr", c(1:19, "X", "Y"))] %>% 
+      makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+
+    mat1 <- normalizeToMatrix(met_gr, feat2do, value_column = "WGBS_hetero_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100))
+    mat2 <- normalizeToMatrix(met_gr, feat2do, value_column = "WGBS_homo_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100))
+    mat3 <- normalizeToMatrix(met_gr, feat2do, value_column = "RRBS_hetero_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100))
+    mat4 <- normalizeToMatrix(met_gr, feat2do, value_column = "RRBS_homo_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100))
+    mat5 <- normalizeToMatrix(coverages, feat2do, value_column = "Het", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 1))      
+    mat6 <- normalizeToMatrix(coverages, feat2do, value_column = "Hom", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 1))  
+  
+    ismesti <- c(failed_rows(mat6), failed_rows(mat5), failed_rows(mat4), failed_rows(mat3), failed_rows(mat2), failed_rows(mat1)) %>% unique
+    mat1 <- mat1[-ismesti, ]    
+    mat2 <- mat2[-ismesti, ]    
+    mat3 <- mat3[-ismesti, ]    
+    mat4 <- mat4[-ismesti, ]    
+    mat5 <- mat5[-ismesti, ]    
+    mat6 <- mat6[-ismesti, ]    
+    saveRDS(list(mat1, mat2, mat3, mat4, mat5, mat6), paste0(outdatadir, "CGI_heatmap", ".RDS"))    
+    } else {tmp <- readRDS(paste0(outdatadir, RDS, ".RDS"))
+            mat1 <- tmp[[1]]
+            mat2 <- tmp[[2]]
+            mat3 <- tmp[[3]]
+            mat4 <- tmp[[4]]
+            mat5 <- tmp[[5]]
+            mat6 <- tmp[[6]]
+    }
+  tmp <- order(rowMeans(mat2[, sortL:sortR]))
+  TOP_max <- round((max(max(colMeans(mat5[], na.rm=TRUE)), 
+                        max(colMeans(mat6[], na.rm=TRUE)))*100+5)/100, 2)
+  RRBS_max <- ceiling(max(max(colMeans(mat1, na.rm=TRUE)), 
+                          max(colMeans(mat2, na.rm=TRUE)), 
+                          max(colMeans(mat3, na.rm=TRUE)), 
+                          max(colMeans(mat4, na.rm=TRUE)))+1)
+  
+
+  TOP_mid <- HeatmapAnnotation(
+        enriched = anno_enriched( 
+            ylim = c(0, TOP_max),
+            axis_param = list(
+                at = c(TOP_max/2),
+                labels = c(""),
+                side = "left",
+                facing = "inside"
+    )))
+  TOP_left <- HeatmapAnnotation(
+        enriched = anno_enriched(
+            ylim = c(0, TOP_max),
+            axis_param = list(
+                at = c(0, TOP_max/2, TOP_max ),
+                labels = c("0", round(TOP_max/2, 2), TOP_max),
+                side = "left",
+                facing = "outside"
+    ))) 
+  TOP_right <- HeatmapAnnotation(
+        enriched = anno_enriched(
+            ylim = c(0, TOP_max),
+            axis_param = list(
+                at = c(0, TOP_max/2, TOP_max ),
+                labels = c("0", round(TOP_max/2, 2), TOP_max),
+                side = "right",
+                facing = "inside"
+    )))   
+
+  RRBS_mid <- HeatmapAnnotation(
+        enriched = anno_enriched(
+            ylim = c(0, RRBS_max),
+            axis_param = list(
+                at = c(RRBS_max/2),
+                labels = c(""),
+                side = "left",
+                facing = "inside"
+    )))
+  RRBS_left <- HeatmapAnnotation(
+        enriched = anno_enriched(
+            ylim = c(0, RRBS_max),
+            axis_param = list(
+                at = c(0, RRBS_max/2, RRBS_max ),
+                labels = c("0", round(RRBS_max/2, 2), RRBS_max),
+                side = "left",
+                facing = "inside"
+    ))) 
+  RRBS_right <- HeatmapAnnotation(
+        enriched = anno_enriched(
+            ylim = c(0, RRBS_max),
+            axis_param = list(
+                at = c(0, RRBS_max/2, RRBS_max ),
+                labels = c("0", round(RRBS_max/2, 2), RRBS_max),
+                side = "right",
+                facing = "outside"
+    )))   
+
+  meth_col_fun_TOP = colorRamp2(c(0, 1), c("white", "red"))
+  meth_col_fun_RRBS = colorRamp2(c(0, 100), c("white", "darkgreen"))
+  
+  ht <- EnrichedHeatmap(mat1, col = meth_col_fun_RRBS, name = "WGBS_hetero_met", axis_name_rot = 90, column_title_rot = 90,
+            column_title = "WGBS_hetero_met", use_raster=TRUE, top_annotation=RRBS_mid, show_heatmap_legend = TRUE) +
+        EnrichedHeatmap(mat2, col = meth_col_fun_RRBS, name = "WGBS_homo_met", axis_name_rot = 90, column_title_rot = 90,
+            column_title = "WGBS_homo_met", use_raster=TRUE, top_annotation=RRBS_mid, show_heatmap_legend = FALSE) +
+        EnrichedHeatmap(mat3, col = meth_col_fun_RRBS, name = "RRBS_hetero_met", axis_name_rot = 90, column_title_rot = 90,
+            column_title = "RRBS_hetero_met", use_raster=TRUE, top_annotation=RRBS_mid, show_heatmap_legend = FALSE) +
+        EnrichedHeatmap(mat4, col = meth_col_fun_RRBS, name = "RRBS_homo_met", axis_name_rot = 90, column_title_rot = 90,
+            column_title = "RRBS_homo_met", use_raster=TRUE, top_annotation=RRBS_right, show_heatmap_legend = FALSE) +
+        EnrichedHeatmap(mat5, col = meth_col_fun_TOP, name = "Het", axis_name_rot = 90, column_title_rot = 90,
+            column_title = "Het", use_raster=TRUE, top_annotation=TOP_mid, show_heatmap_legend = TRUE) +
+        EnrichedHeatmap(mat6, col = meth_col_fun_TOP, name = "Hom", axis_name_rot = 90, column_title_rot = 90,
+            column_title = "Hom", use_raster=TRUE, top_annotation=TOP_right, show_heatmap_legend = FALSE)         
+        
+
+draw(ht,                                 #/ plot the heatmap from above 
+     main="WGBS_hetero_met", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)        
+```
+
+
+## Profiles chip {.tabset}
+
+
+
+
+```{r, fig.width=12, fig.height=11}
+temp <- readRDS(paste0("output/code/WGBS_RRBS/Profiles/", "Profiles_regu_groups.RDS"))
+
+f1 <- temp %>% 
+  .[sample %in% c("dnmt3B", "dnmt3A"), ] %>%   
+  ggplot(aes(V1, V2, group=grupe, colour=grupe)) +
+      geom_line(size=0.5, alpha=0.75, lwd=1.25) +
+      theme_Publication() +
+      theme_bw() +
+      ylab("ChIP") +
+      theme(axis.title.x=element_blank(), 
+            legend.position="bottom",
+            panel.grid.major=element_blank(),
+            panel.background=element_blank(), 
+            strip.text.y.right = element_text(angle = 0)
+            ) +
+      coord_cartesian(ylim=c(200, 700)) +
+      scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
+#      scale_colour_manual(values = cols_samplesLong) +
+      facet_grid(vars(element), vars(sample)) +
+      #facet_grid2(vars(element), vars(sample), scales = "free", independent = "all") +
+      #facet_wrap(~element+sample, scales="free_y") +
+      geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
+      geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
+
+f2 <- temp %>% 
+  .[!(sample %in% c("dnmt3B", "dnmt3A")), ] %>% 
+  ggplot(aes(V1, V2, group=grupe, colour=grupe)) +
+      geom_line(size=0.5, alpha=0.75, lwd=1.25) +
+      theme_Publication() +
+      theme_bw() +
+      ylab("TopSeq*100") +
+      theme(axis.title.x=element_blank(), 
+            legend.position="bottom",
+            panel.grid.major=element_blank(),
+            panel.background=element_blank(),
+            strip.text.y.right = element_text(angle = 0)
+            ) +
+      coord_cartesian(ylim=c(0, 100)) +
+      scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
+#      scale_colour_manual(values = cols_samplesLong) +
+      facet_grid(vars(element), vars(sample)) +
+      #facet_grid2(vars(element), vars(sample), scales = "free", independent = "all") +
+      #facet_wrap(~element+sample, scales="free_y") +
+      geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
+      geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
+
+f1 | f2
+
+```
+
+```{r, fig.width=12, fig.height=9}
+temp <- readRDS(paste0("output/code/WGBS_RRBS/Profiles/", "Profiles_repeatai_groups.RDS"))
+f1 <- temp %>% 
+  .[sample %in% c("dnmt3B", "dnmt3A"), ] %>% 
+  ggplot(aes(V1, V2, group=grupe, colour=grupe)) +
+      geom_line(size=0.5, alpha=0.75, lwd=1.25) +
+      theme_Publication() +
+      theme_bw() +
+      ylab("Identified CpG, %") +
+      theme(axis.title.x=element_blank(), 
+            legend.position="bottom",
+            panel.grid.major=element_blank(),
+            panel.background=element_blank(),
+            strip.text.y.right = element_text(angle = 0)
+            ) +
+      coord_cartesian(ylim=c(200, 700)) +
+      scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
+#      scale_colour_manual(values = cols_samplesLong) +
+      facet_grid(vars(element), vars(sample)) +
+      geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
+      geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
+
+f2 <- temp %>% 
+  .[!(sample %in% c("dnmt3B", "dnmt3A")), ] %>% 
+  ggplot(aes(V1, V2, group=grupe, colour=grupe)) +
+      geom_line(size=0.5, alpha=0.75, lwd=1.25) +
+      theme_Publication() +
+      theme_bw() +
+      ylab("Identified CpG, %") +
+      theme(axis.title.x=element_blank(), 
+            legend.position="bottom",
+            panel.grid.major=element_blank(),
+            panel.background=element_blank(),
+            strip.text.y.right = element_text(angle = 0)
+            ) +
+      #coord_cartesian(ylim=c(0, 100)) +
+      scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
+#      scale_colour_manual(values = cols_samplesLong) +
+      facet_grid(vars(element), vars(sample)) +
+      geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
+      geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
+f1 | f2
+```
+
+
+## Part III 
+
+```{r, fig.height=6}
+d1 <- readRDS("./output/code/WGBS_RRBS/TOP_Stat/data_ElementFrac.RDS")
+d2 <- readRDS("./output/code/WGBS_RRBS/TOP_Stat/data_RepeatsFrac.RDS")
+d <- readRDS(paste0("output/code/WGBS_RRBS/Enrichment/", "Enrichment_CG.RDS"))
+tvarka <- levels(d$Elem)
+
+rbind(d1[[1]], d2[[1]]) %>% 
+  melt() %>% 
+  as.data.table() %>%
+  .[, Var1 := gsub("mm10_", "", Var1)] %>% 
+  #.[, Var1 := gsub("_", "\n", Var1)] %>% 
+  .[, Var1 := factor(Var1, levels=levels(d$Elem))] %>% 
+  ggplot(aes(Var1, value, fill=Var2)) +
+    geom_col(position="dodge") +
+    coord_flip() +
+    theme_bw() +
+    xlab("Element") +
+    ylab("Amount of CpGs, %") +
+    labs(fill="Mutant") +
+    scale_fill_manual(values = cols_samples) +
+    theme(legend.position="bottom") +
+    scale_y_continuous(labels = scales::percent) +
+    ggtitle("Mean fraction")
+```
+
+
+```{r, fig.height=6}
+rbind(d1[[2]], d2[[2]]) %>% 
+  melt() %>% 
+  as.data.table() %>%
+  .[, Var1 := gsub("mm10_", "", Var1)] %>% 
+  #.[, Var1 := gsub("_", "\n", Var1)] %>% 
+  .[, Var1 := factor(Var1, levels=levels(d$Elem))] %>% 
+  ggplot(aes(Var1, value, fill=Var2)) +
+    geom_col(position="dodge") +
+    coord_flip() +
+    theme_bw() +
+    xlab("Element") +
+    ylab("Amount of CpGs, %") +
+    labs(fill="Mutant") +
+    scale_fill_manual(values = cols_samples) +
+    theme(legend.position="bottom") +
+    scale_y_continuous(labels = scales::percent) +
+    ggtitle("Mean coverage")
+```
+
+

@@ -1,0 +1,670 @@
+```{r}
+library(pacman)
+p_load(data.table, dplyr, ggplot2, RColorBrewer, EnrichedHeatmap, circlize, 
+seriation, ComplexHeatmap)
+
+options(scipen=999)
+knitr::opts_chunk$set(fig.width=20, fig.height=9)
+dir.create(outdatadir, recursive=TRUE)
+```
+
+Heatmaps of RRBS and TopSeq. For RRBS, all data is shown (all coverages). 
+ 
+```{r}
+tmp <- readRDS(paste0("output/code/PrepAllData/dAnnotations.RDS"))  
+annotations <- tmp[["anotacijos"]]
+repeatai <- tmp[["repeatai"]]
+
+CGI <- annotations[mcols(annotations)$type ==  "mm10_cpg_islands"]
+CGI_full <- annotations[mcols(annotations)$type == "mm10_cpgUnmsk_UCSC"]
+CGI_repeats <- CGI_full[countOverlaps(CGI_full, annotations[mcols(annotations)$type ==  "mm10_cpg_islands"])== 0]
+
+samples2do_BS <- c("A0D_met", "A2D_met", "A4D_met", "A8D_met")
+samples2do_TOP <- c("D0azide", "D2azide", "D4azide", "D8azide") 
+coverages <- readRDS("./output/code/PrepAllData/diferenciacija_coverages2useTopData.RDS")
+coverages <- coverages %>% 
+  .[D0azide>0, D0azide := 1] %>% 
+  .[D2azide>0, D2azide := 1] %>% 
+  .[D4azide>0, D4azide := 1] %>% 
+  .[D8azide>0, D8azide := 1] %>% 
+  .[, end := start] %>% 
+  .[, c("chr", "start", "end", samples2do_TOP), with=FALSE] %>% 
+  .[chr %in% paste0("chr", c(1:19, "X", "Y"))] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+tmp <- readRDS(paste0("output/code/PrepAllData//differentiations_RRBS.RDS"))
+met_gr <- tmp[["methylation_gr_th"]]
+met_gr <- met_gr[seqnames(met_gr) %in% paste0("chr", c(1:19, "X", "Y"))]
+
+rm(tmp)
+gc()  
+
+makeHeatmap <- function(feat2do, RDS, PDF, sortL=85, sortR=200, extend=4000) {
+  if(!file.exists(paste0(outdatadir, RDS, ".RDS"))) {
+    extend <- 4000
+    mat1 <- normalizeToMatrix(met_gr, feat2do, value_column = "A0D_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100))
+    mat2 <- normalizeToMatrix(met_gr, feat2do, value_column = "A2D_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100))
+    mat3 <- normalizeToMatrix(met_gr, feat2do, value_column = "A4D_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100))
+    mat4 <- normalizeToMatrix(met_gr, feat2do, value_column = "A8D_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 100))
+    mat5 <- normalizeToMatrix(coverages, feat2do, value_column = "D0azide", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 1))
+    mat6 <- normalizeToMatrix(coverages, feat2do, value_column = "D2azide", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 1))
+    mat7 <- normalizeToMatrix(coverages, feat2do, value_column = "D4azide", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 1))
+    mat8 <- normalizeToMatrix(coverages, feat2do, value_column = "D8azide", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = TRUE, target_ratio = 0.3, limit=c(0, 1))            
+
+    mat11 <- normalizeToMatrix(met_gr, feat2do, value_column = "A0D_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100))
+    mat12 <- normalizeToMatrix(met_gr, feat2do, value_column = "A2D_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100))
+    mat13 <- normalizeToMatrix(met_gr, feat2do, value_column = "A4D_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100))
+    mat14 <- normalizeToMatrix(met_gr, feat2do, value_column = "A8D_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100))
+    mat15 <- normalizeToMatrix(coverages, feat2do, value_column = "D0azide", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 1))
+    mat16 <- normalizeToMatrix(coverages, feat2do, value_column = "D2azide", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 1))
+    mat17 <- normalizeToMatrix(coverages, feat2do, value_column = "D4azide", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 1))
+    mat18 <- normalizeToMatrix(coverages, feat2do, value_column = "D8azide", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 1))            
+
+
+    saveRDS(list(mat1, mat2, mat3, mat4, mat5, mat6, mat7, mat8, mat11, mat12, mat13, mat14, mat15, mat16, mat17, mat18), paste0(outdatadir, RDS, ".RDS"))    
+    } else {tmp <- readRDS(paste0(outdatadir, RDS, ".RDS"))
+            mat1 <- tmp[[1]]
+            mat2 <- tmp[[2]]
+            mat3 <- tmp[[3]]
+            mat4 <- tmp[[4]]
+            mat5 <- tmp[[5]]
+            mat6 <- tmp[[6]]
+            mat7 <- tmp[[7]]
+            mat8 <- tmp[[8]]
+            mat11 <- tmp[[9]]
+            mat12 <- tmp[[10]]
+            mat13 <- tmp[[11]]
+            mat14 <- tmp[[12]]
+            mat15 <- tmp[[13]]
+            mat16 <- tmp[[14]]
+            mat17 <- tmp[[15]]
+            mat18 <- tmp[[16]]
+    }
+  tmp <- order(rowMeans(mat2[, sortL:sortR]))
+  TOP_max <- round((max(max(colMeans(mat5[], na.rm=TRUE)), 
+                        max(colMeans(mat6[], na.rm=TRUE)), 
+                        max(colMeans(mat7[], na.rm=TRUE)),   
+                        max(colMeans(mat8[], na.rm=TRUE)))*100+5)/100, 2)
+  RRBS_max <- ceiling(max(max(colMeans(mat1, na.rm=TRUE)),
+                          max(colMeans(mat2, na.rm=TRUE)),
+                          max(colMeans(mat3, na.rm=TRUE)),
+                          max(colMeans(mat4, na.rm=TRUE)))+1)
+  
+  TOP_mid <- HeatmapAnnotation(
+        enriched = anno_enriched(
+            ylim = c(0, TOP_max),
+            axis_param = list(
+                at = c(TOP_max/2),
+                labels = c(""),
+                side = "left",
+                facing = "inside"
+    )))
+  TOP_left <- HeatmapAnnotation(
+        enriched = anno_enriched(
+            ylim = c(0, TOP_max),
+            axis_param = list(
+                at = c(0, TOP_max/2, TOP_max ),
+                labels = c("0", round(TOP_max/2, 2), TOP_max),
+                side = "left",
+                facing = "outside"
+    ))) 
+  TOP_right <- HeatmapAnnotation(
+        enriched = anno_enriched(
+            ylim = c(0, TOP_max),
+            axis_param = list(
+                at = c(0, TOP_max/2, TOP_max ),
+                labels = c("0", round(TOP_max/2, 2), TOP_max),
+                side = "right",
+                facing = "inside"
+    )))   
+
+  RRBS_mid <- HeatmapAnnotation(
+        enriched = anno_enriched(
+            ylim = c(0, RRBS_max),
+            axis_param = list(
+                at = c(RRBS_max/2),
+                labels = c(""),
+                side = "left",
+                facing = "inside"
+    )))
+  RRBS_left <- HeatmapAnnotation(
+        enriched = anno_enriched(
+            ylim = c(0, RRBS_max),
+            axis_param = list(
+                at = c(0, RRBS_max/2, RRBS_max ),
+                labels = c("0", round(RRBS_max/2, 2), RRBS_max),
+                side = "left",
+                facing = "inside"
+    ))) 
+  RRBS_right <- HeatmapAnnotation(
+        enriched = anno_enriched(
+            ylim = c(0, RRBS_max),
+            axis_param = list(
+                at = c(0, RRBS_max/2, RRBS_max ),
+                labels = c("0", round(RRBS_max/2, 2), RRBS_max),
+                side = "right",
+                facing = "outside"
+    )))   
+  meth_col_fun_TOP = colorRamp2(c(0, 1), c("white", "red"))
+  meth_col_fun_RRBS = colorRamp2(c(0, 100), c("white", "darkgreen"))
+  
+  ht <- EnrichedHeatmap(mat1, col = meth_col_fun_RRBS, name = "A0D_met", axis_name_rot = 90,
+            column_title = "A0D_met", use_raster=TRUE, top_annotation=RRBS_left) +
+        EnrichedHeatmap(mat2, col = meth_col_fun_RRBS, name = "A2D_met", axis_name_rot = 90,
+            column_title = "A2D_met", use_raster=TRUE, top_annotation=RRBS_mid, show_heatmap_legend = FALSE) +
+        EnrichedHeatmap(mat3, col = meth_col_fun_RRBS, name = "A4D_met", axis_name_rot = 90,
+            column_title = "A4D_met", use_raster=TRUE, top_annotation=RRBS_mid, show_heatmap_legend = FALSE) +
+        EnrichedHeatmap(mat4, col = meth_col_fun_RRBS, name = "A8D_met", axis_name_rot = 90,
+            column_title = "A8D_met", use_raster=TRUE, top_annotation=RRBS_mid, show_heatmap_legend = FALSE) +
+        EnrichedHeatmap(mat5, col = meth_col_fun_TOP, name = "D0azide", axis_name_rot = 90,
+            column_title = "D0azide", use_raster=TRUE, top_annotation=TOP_mid) +
+        EnrichedHeatmap(mat6, col = meth_col_fun_TOP, name = "D2azide", axis_name_rot = 90,
+            column_title = "D2azide", use_raster=TRUE, top_annotation=TOP_mid, show_heatmap_legend = FALSE) +
+        EnrichedHeatmap(mat7, col = meth_col_fun_TOP, name = "D4azide", axis_name_rot = 90,
+            column_title = "D4azide", use_raster=TRUE, top_annotation=TOP_mid, show_heatmap_legend = FALSE) + 
+        EnrichedHeatmap(mat8, col = meth_col_fun_TOP, name = "D8azide", axis_name_rot = 90,
+            column_title = "D8azide", use_raster=TRUE, top_annotation=TOP_mid, show_heatmap_legend = FALSE) + 
+        EnrichedHeatmap(mat11, col = meth_col_fun_RRBS, name = "A0D_met_noS", axis_name_rot = 90,
+            column_title = "A0D_met_noS", use_raster=TRUE, top_annotation=RRBS_mid, show_heatmap_legend = FALSE) + 
+        EnrichedHeatmap(mat12, col = meth_col_fun_RRBS, name = "A2D_met_noS", axis_name_rot = 90,
+            column_title = "A2D_met_noS", use_raster=TRUE, top_annotation=RRBS_mid, show_heatmap_legend = FALSE) +
+        EnrichedHeatmap(mat13, col = meth_col_fun_RRBS, name = "A4D_met_noS", axis_name_rot = 90,
+            column_title = "A4D_met_noS", use_raster=TRUE, top_annotation=RRBS_left, show_heatmap_legend = FALSE) + 
+        EnrichedHeatmap(mat14, col = meth_col_fun_RRBS, name = "A8D_met_noS", axis_name_rot = 90,
+            column_title = "A8D_met_noS", use_raster=TRUE, top_annotation=RRBS_mid, show_heatmap_legend = FALSE) +
+        EnrichedHeatmap(mat15, col = meth_col_fun_TOP, name = "D0azide_noS", axis_name_rot = 90,
+            column_title = "D0azide_noS", use_raster=TRUE, top_annotation=TOP_mid, show_heatmap_legend = FALSE) + 
+        EnrichedHeatmap(mat16, col = meth_col_fun_TOP, name = "D2azide_noS", axis_name_rot = 90,
+            column_title = "D2azide_noS", use_raster=TRUE, top_annotation=TOP_mid, show_heatmap_legend = FALSE) +
+        EnrichedHeatmap(mat17, col = meth_col_fun_TOP, name = "D4azide_noS", axis_name_rot = 90,
+            column_title = "D4azide_noS", use_raster=TRUE, top_annotation=TOP_mid, show_heatmap_legend = FALSE) + 
+        EnrichedHeatmap(mat18, col = meth_col_fun_TOP, name = "D8azide_noS", axis_name_rot = 90,
+            column_title = "D8azide_noS", use_raster=TRUE, top_annotation=TOP_right, show_heatmap_legend = FALSE)         
+      
+        
+#  pdf(paste0(outdatadir, PDF, ".pdf"))
+#  draw(ht,                                 #/ plot the heatmap from above 
+#      main="C24h", 
+#      heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+#      annotation_legend_side = "right",  #/ legend on the bottom side
+#      padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+#   )
+#  dev.off()
+  return(ht)
+}
+```
+# Heatmaps {.tabset}
+
+Enriched heatmaps for different elements. RRBS data with coverage less than 5 plotted as 0. 
+
+Rows ordered by C24h sample. 
+
+## CGI variants
+
+
+### CGI
+```{r}
+feat <- "mm10_cpg_islands"
+ht <- makeHeatmap(annotations[mcols(annotations)$type ==  feat], "CGI", "CGI") 
+
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+
+### CGI extend
+
+Normal CGI (do not overlap with repeats), but extension is 5 kb - this means that shores and shelves are also visible. 
+
+```{r}
+feat <- "mm10_cpg_islands"
+ht <- makeHeatmap(annotations[mcols(annotations)$type ==  feat], "CGI_extend", "CGI_extend")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+### CGI masked
+
+Using masked CGI - these CGI overlap with repeats and are normally masked. 
+
+
+```{r}
+feat <- "mm10_cpgUnmsk_UCSC"
+feat2do <- annotations[mcols(annotations)$type ==  feat]
+
+feat <- "mm10_cpg_islands"
+feat2do2 <- annotations[mcols(annotations)$type ==  feat]
+
+ht <- makeHeatmap(feat2do[countOverlaps(feat2do, feat2do2) == 0], "CGI_masked", "CGI_masked")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+
+### CGI all possible
+
+Using all CGI (include masked and unmasked sequences). 
+
+```{r}
+feat2do <- "mm10_cpgUnmsk_UCSC"
+ht <- makeHeatmap(annotations[mcols(annotations)$type ==  feat], "CGIall", "CGIall")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+### CG shores 
+
+Shores come from the CGI that do not overlap with repeats. 
+
+```{r}
+feat <- "mm10_cpg_shores"
+ht <- makeHeatmap(annotations[mcols(annotations)$type ==  feat], "CGIshores", "CGIshores", 150:250)
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+### CG shelves 
+
+Shelves come from the CGI that do not overlap with repeats. 
+
+```{r}
+feat <- "mm10_cpg_shelves"
+ht <- makeHeatmap(annotations[mcols(annotations)$type ==  feat], "CGIshelves", "CGIshelves")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+## Promoters 
+
+### Promoters EPD
+
+Here promoters from EPD were used (https://epd.epfl.ch/get_promoters.php). The Eukaryotic Promoter Database is an annotated non-redundant 
+collection of eukaryotic POL II promoters, for which the transcription start site has been determined experimentally. 
+Only best promoter per gene used here. Original data was in mm9, so coordinates were uplifted to mm10 (and some genes/promoters were lost due to this)
+
+```{r}
+feat <- "mm10_EPDpromoters"
+ht <- makeHeatmap(annotations[mcols(annotations)$type ==  feat], "EDP_promoter", "EDP_promoter")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+### Promoters EPD nc
+
+Same source as above, but for non-coding sequences. 
+Only best promoter per gene used here. 
+
+```{r}
+feat <- "mm10_EPDpromotersNC"
+feat2do <- annotations[mcols(annotations)$type ==  feat]
+ht <- makeHeatmap(feat2do, "EDP_promoterNC", "EDP_promoterNC")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+## Other elements
+
+### Protein coding genes 
+
+```{r}
+feat <- "mm10_proteinCoding"
+feat2do <- annotations[mcols(annotations)$type ==  feat]
+ht <- makeHeatmap(feat2do, "proteinCoding", "proteinCoding")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+### lncRNA
+
+```{r}
+feat <- "mm10_lncrna_gencode"
+feat2do <- annotations[mcols(annotations)$type ==  feat]
+ht <- makeHeatmap(feat2do, "mm10_lncrna_gencode", "mm10_lncrna_gencode")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+```{r}
+feat <- "mm10_lncRNA_vM23"
+feat2do <- annotations[mcols(annotations)$type ==  feat]
+ht <- makeHeatmap(feat2do, "mm10_lncRNA_vM23", "mm10_lncRNA_vM23")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+### Processed pseudogene
+
+```{r}
+feat <- "mm10_processedPseudogene"
+feat2do <- annotations[mcols(annotations)$type ==  feat]
+ht <- makeHeatmap(feat2do, "mm10_processedPseudogene", "mm10_processedPseudogene")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+ 
+### enhancers
+
+Data taken from EnhancersAtlas (v2). E14 specific enhancers used. 
+
+```{r}
+feat <- "mm10_enhancers"
+feat2do <- annotations[mcols(annotations)$type ==  feat]
+ht <- makeHeatmap(feat2do, "mm10_enhancers", "mm10_enhancers")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+```{r}
+#########################################################################
+```
+
+## Info about repeats 
+Here I use repeats. There are many classes/Famillies - I chose some of them.
+
+```{r, results='asis'}
+tmp <- mcols(repeatai)$Familly %>% 
+    table %>% 
+    as.data.frame() %>% 
+    as.data.table() %>% 
+    setnames(., c("Familly", "Frequency"))
+
+DT::datatable(tmp, caption = "Table with repeats famillies frequency")
+```
+
+```{r, results='asis'}
+tmp <- mcols(repeatai)$Class %>% 
+    table %>% 
+    as.data.frame() %>% 
+    as.data.table() %>% 
+    setnames(., c("Class", "Frequency"))
+
+DT::datatable(tmp, caption = "Table with repeats classes frequency")
+```
+
+All CpG. Possible to add more Families/classes. I chose to do:  
+DNA/DNA?, LINE/LINE?, LTR/LTR?, SINE/SINE?;  
+Alu, Simple_repeat, Satellite, MIR, L2, L1/L1?, hAT, ERVK/ERVK?, CR1;  
+AT_rich;  
+
+Due to the dataset size, I always selected up to 10k representative sequences 
+(selection performed by random sampling). Theoretically it is possible to use 
+full set, but it takes a long time to calculate everything then. 
+
+## Classes 
+
+### DNA
+
+```{r}
+feat1 <- "DNA"
+feat2 <- "DNA?"
+feat2do <- repeatai[(mcols(repeatai)$Class %in% feat1) | (mcols(repeatai)$Class %in% feat2) | (mcols(repeatai)$Familly %in% feat1) | (mcols(repeatai)$Familly %in% feat2)]
+set.seed(1987)
+feat2do <- sample(feat2do, min(10000, length(feat2do)))
+
+ht <- makeHeatmap(feat2do, "DNA", "DNA")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+  
+```
+
+### LINE
+```{r}
+feat1 <- "LINE"
+feat2 <- "LINE?"
+feat2do <- repeatai[(mcols(repeatai)$Class %in% feat1) | (mcols(repeatai)$Class %in% feat2) | (mcols(repeatai)$Familly %in% feat1) | (mcols(repeatai)$Familly %in% feat2)]
+set.seed(1987)
+feat2do <- sample(feat2do, min(10000, length(feat2do)))
+ht <- makeHeatmap(feat2do, "LTR", "LTR")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+### SINE
+```{r}
+feat1 <- "SINE"
+feat2 <- "SINE?"
+feat2do <- repeatai[(mcols(repeatai)$Class %in% feat1) | (mcols(repeatai)$Class %in% feat2) | (mcols(repeatai)$Familly %in% feat1) | (mcols(repeatai)$Familly %in% feat2)]
+set.seed(1987)
+feat2do <- sample(feat2do, min(10000, length(feat2do)))
+ht <- makeHeatmap(feat2do, "SINE", "SINE")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+### LTR
+```{r}
+feat1 <- "LTR"
+feat2 <- "LTR?"
+feat2do <- repeatai[(mcols(repeatai)$Class %in% feat1) | (mcols(repeatai)$Class %in% feat2) | (mcols(repeatai)$Familly %in% feat1) | (mcols(repeatai)$Familly %in% feat2)]
+set.seed(1987)
+feat2do <- sample(feat2do, min(10000, length(feat2do)))
+ht <- makeHeatmap(feat2do, "LTR", "LTR")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+## Famillies
+
+### Alu
+```{r}
+feat1 <- "Alu"
+feat2do <- repeatai[(mcols(repeatai)$Class %in% feat1) | (mcols(repeatai)$Familly %in% feat1) ]
+set.seed(1987)
+feat2do <- sample(feat2do, min(10000, length(feat2do)))
+ht <- makeHeatmap(feat2do, "Alu", "Alu")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+### Simple_repeat
+```{r}
+feat1 <- "Simple_repeat"
+feat2do <- repeatai[(mcols(repeatai)$Class %in% feat1) | (mcols(repeatai)$Familly %in% feat1) ]
+set.seed(1987)
+feat2do <- sample(feat2do, min(10000, length(feat2do)))
+ht <- makeHeatmap(feat2do, "Simple_repeat", "Simple_repeat")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+### Satellite
+```{r}
+feat1 <- "Satellite"
+feat2do <- repeatai[(mcols(repeatai)$Class %in% feat1) | (mcols(repeatai)$Familly %in% feat1) ]
+set.seed(1987)
+feat2do <- sample(feat2do, min(10000, length(feat2do)))
+ht <- makeHeatmap(feat2do, "Satellite", "Satellite")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+
+### MIR
+```{r}
+feat1 <- "MIR"
+feat2do <- repeatai[(mcols(repeatai)$Class %in% feat1) | (mcols(repeatai)$Familly %in% feat1) ]
+set.seed(1987)
+feat2do <- sample(feat2do, min(10000, length(feat2do)))
+ht <- makeHeatmap(feat2do, "MIR", "MIR")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+### L2
+```{r}
+feat1 <- "L2"
+feat2do <- repeatai[(mcols(repeatai)$Class %in% feat1) | (mcols(repeatai)$Familly %in% feat1) ]
+set.seed(1987)
+feat2do <- sample(feat2do, min(10000, length(feat2do)))
+ht <- makeHeatmap(feat2do, "L2", "L2")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+### L1
+```{r}
+feat1 <- "L1"
+feat2 <- "L1?"
+feat2do <- repeatai[(mcols(repeatai)$Class %in% feat1) | (mcols(repeatai)$Class %in% feat2) | (mcols(repeatai)$Familly %in% feat1) | (mcols(repeatai)$Familly %in% feat2)]
+set.seed(1987)
+feat2do <- sample(feat2do, min(10000, length(feat2do)))
+ht <- makeHeatmap(feat2do, "L1", "L1")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+
+### hAT
+```{r}
+feat1 <- "hAT"
+feat2 <- "hAT?"
+feat2do <- repeatai[(mcols(repeatai)$Class %in% feat1) | (mcols(repeatai)$Class %in% feat2) | (mcols(repeatai)$Familly %in% feat1) | (mcols(repeatai)$Familly %in% feat2)]
+set.seed(1987)
+feat2do <- sample(feat2do, min(10000, length(feat2do)))
+ht <- makeHeatmap(feat2do, "hAT", "hAT")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+### ERVK
+```{r}
+feat1 <- "ERVK"
+feat2 <- "ERVK?"
+feat2do <- repeatai[(mcols(repeatai)$Class %in% feat1) | (mcols(repeatai)$Class %in% feat2) | (mcols(repeatai)$Familly %in% feat1) | (mcols(repeatai)$Familly %in% feat2)]
+set.seed(1987)
+feat2do <- sample(feat2do, min(10000, length(feat2do)))
+ht <- makeHeatmap(feat2do, "ERVK", "ERVK")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```
+
+
+### CR1
+```{r}
+feat1 <- "MIR"
+feat2do <- repeatai[(mcols(repeatai)$Class %in% feat1) | (mcols(repeatai)$Familly %in% feat1) ]
+set.seed(1987)
+feat2do <- sample(feat2do, min(10000, length(feat2do)))
+ht <- makeHeatmap(feat2do, "MIR", "MIR")
+draw(ht,                                 #/ plot the heatmap from above 
+     main="D8azide", 
+     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
+     annotation_legend_side = "right",  #/ legend on the bottom side
+     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+)
+```

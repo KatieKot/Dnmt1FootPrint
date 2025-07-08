@@ -1,0 +1,938 @@
+```{r}
+library(pacman)
+p_load(data.table, dplyr, ggplot2, rtracklayer, RColorBrewer, scales, foreach, doParallel, org.Mm.eg.db,
+viridis, annotatr, stringr, patchwork, GGally, EnrichedHeatmap, circlize, clusterProfiler)
+options(scipen=999)
+dir.create(outdatadir, recursive=TRUE)
+registerDoParallel(20)
+source("./code/common.R")
+knitr::opts_chunk$set(fig.width=9, fig.height=5)
+```
+
+# TopSeq {.tabset}
+
+Basic statistics. 
+
+```{r}
+configs <- fread("data_prep/config_torrent.yaml", header=FALSE) 
+wdir <- configs[V1 == "workdir:", V2]
+
+samplesInfo <- fread("input/samples_info.txt") %>% 
+  .[USE == "E2", ] %>% 
+  .[, replicate := str_extract(ID, "R.$")] %>% 
+  .[, condition := gsub("_R[0-9]", "", ID)] %>% 
+  .[ID != "Het_R1", ]
+samples2do <- samplesInfo$ID
+samples2do_m <- c("WT", "Het", "Hom")
+```
+ 
+```{r}
+coverages <- readRDS("./output/code/PrepAllData/mutantai_coverages2useTopData.RDS")
+```
+
+## Simple stats 
+
+Usefull reads number, number of targets, mean/median coverage, distance to targets. 
+
+Number of reads (only reads that were assigned to targets counted).
+```{r}
+# nuskaitymu skaicius 
+coverages[, samples2do, with=FALSE] %>% 
+  colSums() %>% 
+  as.data.frame() %>% 
+  as.data.table(., keep.rownames=TRUE) %>% 
+  melt() %>% 
+  as.data.table() %>% 
+  .[, variable := NULL] %>% 
+  ggplot(aes(rn, value, label=paste0(round(value/1000000, 2), "M"))) +  
+    geom_col(position="dodge") +
+    geom_text(aes(angle=90)) +
+    theme_bw() +
+    ggtitle("Read count") +
+    ylab("Reads") + 
+    scale_y_continuous(labels = label_number(suffix = " M", scale = 1e-6)) +
+    theme(axis.title.x = element_blank())
+```
+
+Number of targets (coverage at least 1)
+
+```{r}
+get_targets <- function(x, th=0) {sum(x>th)}
+coverages[, samples2do, with=FALSE] %>% 
+  apply(., 2, get_targets) %>% 
+  as.data.frame() %>% 
+  as.data.table(., keep.rownames=TRUE) %>% 
+  melt() %>% 
+  as.data.table() %>% 
+  .[, variable := NULL] %>% 
+  ggplot(aes(rn, value, label=paste0(round(value/1000000, 2), "M"))) +  
+    geom_col(position="dodge") +
+    geom_text(aes(angle=90)) +
+    theme_bw() +
+    ggtitle("Target count") +
+    ylab("Targets") + 
+    scale_y_continuous(labels = label_number(suffix = " M", scale = 1e-6)) +
+    theme(axis.title.x = element_blank())
+
+temp <- coverages[, c(samples2do_m, samples2do), with=FALSE] %>% 
+  apply(., 2, get_targets) %>% 
+  as.data.frame() %>% 
+  as.data.table(., keep.rownames=TRUE) %>% 
+  melt() %>% 
+  as.data.table() %>% 
+  .[, variable := NULL]
+
+saveRDS(temp, paste0(outdatadir, "data_TargetNo.RDS"))
+```
+
+Average and median coverage of all targets that were covered with at least on read. 
+
+```{r}
+covas <- function(x) {mean(x[x>0])}
+coverages[, samples2do, with=FALSE] %>% 
+  apply(., 2, covas) %>% 
+  as.data.table(., keep.rownames=TRUE) %>% 
+  melt() %>% 
+  ggplot(aes(rn, value))+
+    geom_col() +
+    theme_bw() +
+    ggtitle("Average coverage") +
+    xlab("sample") +
+    ylab("coverage")
+
+temp <- coverages[, c(samples2do_m, samples2do), with=FALSE] %>% 
+  apply(., 2, covas) %>% 
+  as.data.table(., keep.rownames=TRUE) %>% 
+  melt()
+
+saveRDS(temp, paste0(outdatadir, "data_TargetCov.RDS"))
+
+medianas <- function(x) {median(x[x>0])}
+coverages[, samples2do, with=FALSE] %>% 
+  apply(., 2, medianas) %>% 
+  as.data.table(., keep.rownames=TRUE) %>% 
+  melt() %>% 
+  ggplot(aes(rn, value))+
+    geom_col() +
+    theme_bw() +
+    ggtitle("Median coverage") +
+    xlab("sample") +
+    ylab("coverage")
+```
+
+Number of targets with specific coverage. 
+
+```{r}
+cum_cov <- function(x) {
+  rez <- foreach(i=1:10, .combine="rbind") %do% {
+    sum(x==i) 
+  }
+  rbind(rez, sum(x>10)) 
+}
+coverages[, samples2do, with=FALSE] %>% 
+  apply(., 2, cum_cov) %>% 
+  as.data.table(., keep.rownames=TRUE) %>% 
+  .[, nr := 1:11] %>% 
+  melt(, id.vars="nr") %>% 
+  .[, nr := factor(nr, levels=1:11, labels=c(1:10, ">10"))] %>% 
+  ggplot(aes(nr, value)) +
+    geom_col() +
+    theme_bw() +
+    ggtitle("Number of targets") +
+    xlab("sample") +
+    ylab("Coverage == X") +
+    scale_y_continuous(labels = label_number(suffix = " K", scale = 1e-3)) +
+    facet_wrap(~variable, scales="free")
+```
+
+Coverage density. Empty (zero coverage) CGs were removed. Values higher than 50 
+were transformed to 50. All values log2 transformed. 
+
+```{r}
+coverages[, samples2do, with=FALSE] %>% 
+  melt() %>% 
+  as.data.table() %>% 
+  .[value > 0, ] %>% 
+  .[value > 50, value := 50] %>% 
+  .[, value := log2(value)] %>% 
+  .[, condition :=  strsplit(as.character(variable), "_") %>% sapply(., `[`, 1)] %>% 
+  ggplot(aes(x=value, fill=variable, colour=variable)) +
+    geom_density(key_glyph = "rect", alpha=0.5) +
+    theme_bw() +
+    ggtitle("Coverage density") +
+    scale_colour_brewer(palette="Paired") +
+    scale_fill_brewer(palette="Paired") +
+    facet_wrap(~condition) +
+    theme(legend.position="bottom") +
+    xlab("log2(coverage)")
+
+coverages[, samples2do, with=FALSE] %>% 
+  melt() %>% 
+  as.data.table() %>% 
+  .[value > 0, ] %>% 
+  .[value > 50, value := 50] %>% 
+  .[, value := log2(value)] %>% 
+  ggplot(aes(x=value, fill=variable, colour=variable)) +
+    geom_density(key_glyph = "rect", alpha=0.5) +
+    theme_bw() +
+    ggtitle("Coverage density") +
+    scale_colour_brewer(palette="Dark2") +
+    scale_fill_brewer(palette="Dark2") +
+    theme(legend.position="bottom") +
+    xlab("log2(coverage)")    
+```
+
+Distance to nearest target. 
+```{r}
+d <- readRDS(paste0("./output/code/PrepAllData/", "mutantai_TopData.RDS"))
+atstumai <- foreach(i=names(d), .combine="rbind") %do% {
+  d[[i]][[1]] %>% 
+    as.data.table %>% 
+    .[, grupe := "KITA"] %>% 
+    as.data.table %>% 
+    .[, V1 := as.numeric(V1)] %>% 
+    .[V1 ==  -1, grupe := "-1"] %>% 
+    .[V1 == -2, grupe := "-2"] %>% 
+    .[V1 == -3, grupe := "-3"] %>% 
+    .[V1 == -4, grupe := "-4"] %>%
+    .[V1 == -5, grupe := "-5"] %>% 
+    .[V1 == -6, grupe := "-6"] %>% 
+    .[V1 == -7, grupe := "-7"] %>% 
+    .[V1 < -7, grupe := "<=-8"] %>% 
+    .[V1 == 1, grupe := "1"] %>% 
+    .[V1 == 2, grupe := "2"] %>% 
+    .[V1 == 3, grupe := "3"] %>% 
+    .[V1 == 4, grupe := "4"] %>%
+    .[V1 == 5, grupe := "5"] %>% 
+    .[V1 == 6, grupe := "6"] %>% 
+    .[V1 == 7, grupe := "7"] %>% 
+    .[V1 > 7, grupe := ">=8"] %>% 
+    .[V1 == 0, grupe := 0] %>% 
+    .[, lapply(.SD, sum), by="grupe", .SDcols="N"] %>% 
+    .[, grupe := factor(grupe, levels=c("<=-8", "-7", "-6", "-5",  "-4", "-3", "-2", "-1", "0", "1", "2", "3", "4", "5", "6", "7", ">=8"))] %>% 
+    .[, name := i] %>% 
+    .[]
+}
+
+atstumai %>% as.data.table() %>% 
+  .[, condition := strsplit(name, "_") %>% sapply(., `[`, 1)] %>% 
+  ggplot(aes(grupe, N, group=name, color=name)) +
+    geom_point() +
+    geom_line() +
+    #geom_col(position="dodge") +
+    theme_bw() +
+    facet_wrap(~name, scales="free") +
+    ylab("Number of reads") +
+    xlab("Distance to CG target") +
+    facet_wrap(~condition, scales="free") +
+    scale_colour_brewer(palette="Paired") +
+    scale_y_continuous(labels = label_number(suffix = " M", scale = 1e-6)) +
+    theme(legend.position="bottom") +
+    labs(color="Sample")
+
+total <- atstumai %>% 
+  as.data.table() %>% 
+  .[, condition := strsplit(name, "_") %>% sapply(., `[`, 1)] %>% 
+  .[, lapply(.SD, sum), by=c("condition"), .SDcols="N"] %>% setnames(., c("condition", "total"))
+
+atstumai %>%  
+  as.data.table() %>% 
+  .[, condition := strsplit(name, "_") %>% sapply(., `[`, 1)] %>% 
+  .[, lapply(.SD, sum), by=c("condition", "grupe"), .SDcols="N"] %>% 
+  merge(., total, by="condition") %>% 
+  .[, frac := N/total] %>% 
+  ggplot(aes(grupe, frac, colour=condition, group=condition)) +
+    geom_point() +
+    geom_line() +
+    theme_bw() +
+    scale_colour_brewer(palette="Dark2") +
+    theme(legend.position="bottom") +
+    labs(color="Sample") +
+    ylab("Fraction of reads, %") +
+    scale_y_continuous(labels = scales::percent) +
+    xlab("Distance to CpG, bp")
+```
+
+## Per chromosome stats 
+
+```{r}
+tmp <- foreach(i=samples2do_m, .combine="rbind") %do% {
+  coverages[, c("chr", i), with=FALSE] %>% 
+    .[get(i) > 0,] %>% 
+    setnames(., c("chr", "coverage")) %>% 
+    .[, sample := i] %>% 
+    .[]    
+} %>% 
+  as.data.table() %>% 
+  .[, chr := factor(chr, levels=paste0("chr", c(1:19, "X", "Y")))] 
+
+ggplot(tmp, aes(chr, coverage, fill=sample)) +
+  geom_boxplot(outlier.shape=NA) +
+  theme_bw() +
+  scale_fill_brewer(palette="Dark2") +
+  coord_cartesian(ylim=c(0, 35)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  ylab("coverage, fold") +
+  ggtitle("Coverage per chromosome")
+
+saveRDS(tmp, paste0(outdatadir, "data_perChromCoverage.RDS"))
+
+# Taikiniu frakcija
+
+tmp <- foreach(i=samples2do_m, .combine="rbind") %do% {
+  coverages[, c("chr", i), with=FALSE] %>% 
+    .[get(i) > 0, chr] %>% 
+    table %>% 
+    as.data.table(., keep.rownames=TRUE) %>%
+    setnames(., c("chr", "targets")) %>% 
+    .[, sample := i] %>% 
+    .[]    
+} %>% 
+  as.data.table() %>% 
+  merge(., (table(coverages$chr) %>% as.data.table(., keep.rownames=TRUE) %>% setnames(., c("chr", "CpG"))), by="chr") %>% 
+  .[, frakcija := targets/CpG] %>% 
+  .[, chr := factor(chr, levels=paste0("chr", c(1:19, "X", "Y")))] 
+
+ggplot(tmp, aes(chr, frakcija, fill=sample)) +
+  geom_col(position="dodge") +
+  theme_bw() +
+  scale_fill_brewer(palette="Dark2") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position="bottom") +
+  ylab("Targets, %") +
+  ggtitle("Targets (cov>0) per chromosome") +
+  scale_y_continuous(labels = scales::percent)
+
+```
+
+## Bin'u lygio duomenys 
+
+Correlations (using bins of 2kb). Targets number per bin used here. 
+
+
+```{r}
+suma_2 <- function(x){sum(x>0, na.rm=TRUE)}
+bin_size <- 2000
+coverages$ID <- paste0(coverages$chr, "_", floor(as.numeric(coverages$start)/bin_size))
+binai <- coverages[, lapply(.SD, sum, na.rm=TRUE), by = "ID", .SDcols=samples2do] 
+binai_taikiniai <- coverages[, lapply(.SD, suma_2), by = "ID", .SDcols=samples2do] 
+
+column_ha = HeatmapAnnotation(replicate = colnames(binai[, -1]) %>% strsplit(., "_") %>% sapply(., `[`, 2), 
+                              condition = colnames(binai[, -1]) %>% strsplit(., "_") %>% sapply(., `[`, 1),
+                              col = list(replicate = c("R1" = brewer.pal(n=9,"Greens")[2], "R2" = brewer.pal(n=9,"Greens")[4], "R3" = brewer.pal(n=9,"Greens")[6], "R4"=brewer.pal(n=9,"Greens")[8]), 
+                                         condition = c("Het" = brewer.pal(n=3,"Set1")[1], "Hom" = brewer.pal(n=3,"Set1")[2], "WT" = brewer.pal(n=3,"Set1")[3])),
+                              show_legend = c(FALSE, FALSE)           
+                              )
+row_ha = rowAnnotation(replicate = colnames(binai[, -1]) %>% strsplit(., "_") %>% sapply(., `[`, 2), 
+                       condition = colnames(binai[, -1]) %>% strsplit(., "_") %>% sapply(., `[`, 1),
+                       col = list(replicate = c("R1" = brewer.pal(n=9,"Greens")[2], "R2" = brewer.pal(n=9,"Greens")[4], "R3" = brewer.pal(n=9,"Greens")[6], "R4"=brewer.pal(n=9,"Greens")[8]), 
+                                  condition = c("Het" = brewer.pal(n=3,"Set1")[1], "Hom" = brewer.pal(n=3,"Set1")[2], "WT" = brewer.pal(n=3,"Set1")[3]))
+                              )
+tmp <- cor((as.data.table(binai_taikiniai) %>% .[, ID := NULL])) 
+Heatmap(tmp, name="pearson", 
+          top_annotation = column_ha, 
+          right_annotation = row_ha,
+          show_row_names=FALSE,
+          show_column_names=TRUE,
+          column_title = "Pearson correlation on bins",
+          cell_fun = function(j, i, x, y, w, h, col) { # add text to each grid
+          grid.text(round(tmp[i, j], 2), x, y)}
+          )
+saveRDS(list(tmp, column_ha, row_ha), paste0(outdatadir, "data_heatmapCor.RDS"))
+```
+
+
+Summed bin coverage used here.
+```{r}
+tmp <- cor((as.data.table(binai) %>% .[, ID := NULL])) 
+Heatmap(tmp, name="pearson", 
+          top_annotation = column_ha, 
+          right_annotation = row_ha,
+          show_row_names=FALSE,
+          show_column_names=TRUE,
+          column_title = "Pearson correlation on bins",
+          cell_fun = function(j, i, x, y, w, h, col) { # add text to each grid
+          grid.text(round(tmp[i, j], 2), x, y)}
+          )
+
+tmp <- (as.data.table(binai))
+tmp_table <- data.frame(matrix(nrow=length(names(tmp)[-1]), ncol=length(names(tmp)[-1])))
+colnames(tmp_table) <- names(tmp)[-1]
+rownames(tmp_table) <- names(tmp)[-1]
+```
+
+Jaccard using 2kb bins. All bins with at least one target counted. 
+```{r}
+tmp <- foreach(i=names(tmp)[-1], .combine="rbind") %do% {
+    foreach(j=names(tmp)[-1], .combine="rbind") %do% { 
+    tmp_table[i, j] <- length(intersect(coverages[get(i)>0, ID], coverages[get(j)>0, ID]))/length(union(coverages[get(i)>0, ID], coverages[get(j)>0, ID]))
+} }
+
+column_ha = HeatmapAnnotation(replicate = colnames(tmp_table) %>% strsplit(., "_") %>% sapply(., `[`, 2), 
+                              condition = colnames(tmp_table) %>% strsplit(., "_") %>% sapply(., `[`, 1),
+                              col = list(replicate = c("R1" = brewer.pal(n=9,"Greens")[2], "R2" = brewer.pal(n=9,"Greens")[4], "R3" = brewer.pal(n=9,"Greens")[6], "R4"=brewer.pal(n=9,"Greens")[8]), 
+                                         condition = c("Het" = brewer.pal(n=3,"Set1")[1], "Hom" = brewer.pal(n=3,"Set1")[2], "WT" = brewer.pal(n=3,"Set1")[3])),
+                              show_legend = c(FALSE, FALSE)           
+                              )
+row_ha = rowAnnotation(replicate = colnames(tmp_table) %>% strsplit(., "_") %>% sapply(., `[`, 2), 
+                       condition = colnames(tmp_table) %>% strsplit(., "_") %>% sapply(., `[`, 1),
+                       col = list(replicate = c("R1" = brewer.pal(n=9,"Greens")[2], "R2" = brewer.pal(n=9,"Greens")[4], "R3" = brewer.pal(n=9,"Greens")[6], "R4"=brewer.pal(n=9,"Greens")[8]), 
+                                  condition = c("Het" = brewer.pal(n=3,"Set1")[1], "Hom" = brewer.pal(n=3,"Set1")[2], "WT" = brewer.pal(n=3,"Set1")[3]))
+                              )
+
+Heatmap(tmp_table, name="Jaccard", 
+          top_annotation = column_ha, 
+          right_annotation = row_ha,
+          show_row_names=FALSE,
+          show_column_names=TRUE,
+          column_title = "Jaccard on bins",
+          cell_fun = function(j, i, x, y, w, h, col) { # add text to each grid
+          grid.text(round(tmp_table[i, j], 2), x, y)}
+          )
+```
+
+
+Simple PCA: two variants done. Var1: coverages sum per bin. Var2: number of targets per bin. 
+
+```{r}
+pca <- binai[, -1] %>% t %>% prcomp(., center=FALSE, scale=FALSE)
+d <- as.data.table(pca$x, keep.rownames=TRUE)
+
+p1 <- d %>% 
+  .[, rep := str_extract( as.character(rn), "R[1-4]")] %>% 
+  .[, condition := strsplit(as.character(rn), "_") %>% sapply(., `[`, 1)] %>% 
+  ggplot(aes(PC1, PC2, colour=condition, shape=rep)) + 
+    geom_point(size=3) +
+    theme_bw() +
+    scale_colour_brewer(palette="Dark2") +
+    ggtitle("Cov. sum per bin.") +
+    xlab(paste0("PC1, ", round(summary(pca)$importance[2, 1]*100, 2), "%")) +
+    ylab(paste0("PC2, ", round(summary(pca)$importance[2, 2]*100, 2), "%")) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), 
+          legend.position="bottom"
+          )  
+
+pca <- binai_taikiniai[, -1] %>% t %>% prcomp(., center=FALSE, scale=FALSE)
+d <- as.data.table(pca$x, keep.rownames=TRUE)
+
+p2 <- d %>% 
+  .[, rep := str_extract( as.character(rn), "R[1-4]")] %>% 
+  .[, condition := strsplit(as.character(rn), "_") %>% sapply(., `[`, 1)] %>% 
+  ggplot(aes(PC1, PC2, colour=condition, shape=rep)) + 
+    geom_point(size=3) +
+    theme_bw() +
+    scale_colour_brewer(palette="Dark2") +
+    ggtitle("Cov. tergets per bin.") +
+    xlab(paste0("PC1, ", round(summary(pca)$importance[2, 1]*100, 2), "%")) +
+    ylab(paste0("PC2, ", round(summary(pca)$importance[2, 2]*100, 2), "%")) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), 
+          legend.position="bottom"
+          )  
+
+
+binai_m <- coverages[, lapply(.SD, sum, na.rm=TRUE), by = "ID", .SDcols=samples2do_m]
+binai_taikiniai_m <- coverages[, lapply(.SD, suma_2), by = "ID", .SDcols=samples2do_m]
+
+pca <- binai_m[, -1] %>% t %>% prcomp(., center=FALSE, scale=FALSE)
+d <- as.data.table(pca$x, keep.rownames=TRUE)
+p3 <- d %>% 
+  .[, condition := strsplit(as.character(rn), "_") %>% sapply(., `[`, 1)] %>% 
+  ggplot(aes(PC1, PC2, colour=condition)) + 
+    geom_point(size=3) +
+    theme_bw() +
+    scale_colour_brewer(palette="Dark2") +
+    ggtitle("Cov. sum per bin.") +
+    xlab(paste0("PC1, ", round(summary(pca)$importance[2, 1]*100, 2), "%")) +
+    ylab(paste0("PC2, ", round(summary(pca)$importance[2, 2]*100, 2), "%")) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), 
+          legend.position="bottom")  
+
+pca <- binai_taikiniai_m[, -1] %>% t %>% prcomp(., center=FALSE, scale=FALSE)
+d <- as.data.table(pca$x, keep.rownames=TRUE)
+p4 <- d %>% 
+  .[, condition := strsplit(as.character(rn), "_") %>% sapply(., `[`, 1)] %>% 
+  ggplot(aes(PC1, PC2, colour=condition)) + 
+    geom_point(size=3) +
+    theme_bw() +
+    scale_colour_brewer(palette="Dark2") +
+    ggtitle("Cov. tergets per bin.") +
+    xlab(paste0("PC1, ", round(summary(pca)$importance[2, 1]*100, 2), "%")) +
+    ylab(paste0("PC2, ", round(summary(pca)$importance[2, 2]*100, 2), "%")) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), 
+          legend.position="bottom")  
+```
+
+
+```{r}
+(p1 | p2) / (p3 + p4)  +  plot_layout(guides = "collect") & theme(legend.position = 'bottom')
+```
+
+## Some analysis
+
+
+Fraction of CpGs identified on different elements as well as their average coverage.  
+
+About the question marks: "The rules for assigning question marks are arbitrary; currently question marks are used when a
+match shows a 2-fold lower or a 1.5-fold higher divergence level as expected for a repeat at the boundary."
+
+```{r, fig.height=9}
+#promotoriai 
+tmp <- readRDS(paste0("output/code/PrepAllData//dAnnotations.RDS"))
+repeatai <- tmp[["repeatai"]]
+mcols(repeatai)$type <- paste0(mcols(repeatai)$Name, "_", mcols(repeatai)$Class, "_", mcols(repeatai)$Familly)
+annotations <- tmp[["anotacijos"]]
+anotacijos <- c(annotations, repeatai)
+
+coverages_gr <- coverages %>% 
+  .[, end := start] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+feat2do_genes <- c("mm10_cpg_islands", "mm10_CTCF", "mm10_EPDpromotersNC", "mm10_genes_3UTRs", "mm10_genes_cds", "mm10_genes_firstexons", "mm10_genes_introns", "mm10_lncrna_gencode", "mm10_PoisedEnhancers_Atlas", "mm10_processedPseudogene", "mm10_Silencer_E14", "mm10_superEnhancer", "mm10_EPDpromoters", "mm10_Silencer_mESC", "mm10_transcriptsCoding")
+
+############################# Prideta dalis tam, kad suvienodinti su enrichment analize 
+gff <- import("/mnt/store/annotations/MusMusculus_mm10_Ensembl/ENCODE/gencode.vM23.annotation.gtf")
+
+# darom nauja anotacija 
+
+tmp <- annotations[mcols(annotations)$type == "mm10_genes_3UTRs"]
+mcols(tmp)$type <- "3UTRs"
+tmp_annotations <- copy(tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_genes_5UTRs"]
+mcols(tmp)$type <- "5UTRs"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_lncrna_gencode"]
+mcols(tmp)$type <- "lncRNA_gencode"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_genes_exons"]
+mcols(tmp)$type <- "exons"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_genes_introns"]
+mcols(tmp)$type <- "introns"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_EPDpromoters"]
+mcols(tmp)$type <- "promoterEPD"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_EPDpromotersNC"]
+mcols(tmp)$type <- "promoter_NC_EPD"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_transcriptsCoding"]
+mcols(tmp)$type <- "codingTranscripts"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_islands"][countOverlaps(annotations[mcols(annotations)$type == "mm10_cpg_islands"], annotations[mcols(annotations)$type == "mm10_EPDpromoters"]) > 0]
+mcols(tmp)$type <- "CGI promoter"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_islands"][countOverlaps(annotations[mcols(annotations)$type == "mm10_cpg_islands"], annotations[mcols(annotations)$type == "mm10_genes_intergenic"]) > 0]
+mcols(tmp)$type <- "CGI intergenic"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_islands"][countOverlaps(annotations[mcols(annotations)$type == "mm10_cpg_islands"], annotations[mcols(annotations)$type == "mm10_transcriptsCoding"]) > 0]
+mcols(tmp)$type <- "CGI intragenic"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_shelves"]
+mcols(tmp)$type <- "CGI shelves"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_shores"]
+mcols(tmp)$type <- "CGI shores"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_islands"]
+mcols(tmp)$type <- "CGI all"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- gff[mcols(gff)$gene_type == "miRNA"] 
+mcols(tmp) <- NULL 
+mcols(tmp)$type <- "miRNA"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- gff[mcols(gff)$gene_type == "snoRNA"]
+mcols(tmp) <- NULL 
+mcols(tmp)$type <- "snoRNA"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- gff[mcols(gff)$gene_type == "snRNA"]
+mcols(tmp) <- NULL 
+mcols(tmp)$type <- "snRNA"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+feat2do_genes <- c("3UTRs", "5UTRs", "lncRNA_gencode", "exons", "introns", "promoterEPD", "promoter_NC_EPD", "codingTranscripts", "CGI promoter", "CGI intergenic", "CGI intragenic", "CGI shelves", "CGI shores", "CGI all", "miRNA", "snoRNA", "snRNA")
+
+
+
+suma <- function(x) {sum(x>0, na.rm=TRUE)}
+
+frakcijos_gen <- foreach(i=feat2do_genes, .combine="rbind") %do% {
+  # kiek procentu CG pagavom 
+  # koks vidutinis modifikavimas
+  #i <- "LINE"
+  elementai <- tmp_annotations[mcols(tmp_annotations)$type == i] %>% reduce
+  nCG <- countOverlaps(coverages_gr, elementai) %>% sum
+  frakcija <- foreach(j=samples2do_m, .combine="c") %do% {
+    (countOverlaps(coverages_gr[elementMetadata(coverages_gr)[, j]>0], elementai) %>% suma)/nCG
+  }
+  names(frakcija) <- samples2do_m
+  return(frakcija)
+}
+rownames(frakcijos_gen) <- feat2do_genes
+
+coveragas_gen <- foreach(i=feat2do_genes, .combine="rbind") %do% {
+  # kiek procentu CG pagavom 
+  # koks vidutinis modifikavimas
+  #i <- "LINE"
+  elementai <- tmp_annotations[mcols(tmp_annotations)$type == i] %>% reduce
+  nCG <- countOverlaps(coverages_gr, elementai) %>% sum
+ 
+  coveragas <- foreach(j=samples2do_m, .combine="c") %do% {
+    coverages_gr[elementMetadata(coverages_gr)[, j]>0][countOverlaps(coverages_gr[elementMetadata(coverages_gr)[, j]>0], elementai)>0] %>% 
+      as.data.table() %>% 
+      .[, j, with=FALSE] %>% 
+      colMeans()
+  }
+  names(coveragas) <- samples2do_m
+  return(coveragas)
+}
+rownames(coveragas_gen) <- feat2do_genes 
+
+saveRDS(list(frakcijos_gen, coveragas_gen), paste0(outdatadir, "data_ElementFrac.RDS"))
+
+p1 <- frakcijos_gen %>% 
+  melt() %>% 
+  as.data.table() %>%
+  .[, Var1 := gsub("mm10_", "", Var1)] %>% 
+  .[, Var1 := gsub("_", "\n", Var1)] %>% 
+  ggplot(aes(Var1, value, fill=Var2)) +
+    geom_col(position="dodge") +
+    coord_flip() +
+    theme_bw() +
+    xlab("Element") +
+    ylab("Amount of CpGs, %") +
+    labs(fill="Mutant") +
+    scale_fill_brewer(palette="Dark2") +
+    theme(legend.position="bottom") +
+    scale_y_continuous(labels = scales::percent) +
+    ggtitle("Genome elements. Target fraction")
+
+p3 <- coveragas_gen %>% 
+  melt() %>% 
+  as.data.table() %>% 
+  .[, Var1 := gsub("mm10_", "", Var1)] %>% 
+  .[, Var1 := gsub("_", "\n", Var1)] %>%   
+  ggplot(aes(Var1, value, fill=Var2)) +
+    geom_col(position="dodge") +
+    coord_flip() +
+    theme_bw() +
+    xlab("Element") +
+    ylab("Mean coverage") +
+    labs(fill="Mutant") +
+    scale_fill_brewer(palette="Dark2") +
+    theme(legend.position="bottom") +
+    ggtitle("Genome elements. Mean coverage")
+``` 
+
+```{r, fig.height=9}
+# Prideta tam, kad suvienodinti su enrichment 
+tmp <- repeatai[mcols(repeatai)$Class == "DNA"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "DNA"
+tmp_annotations <- copy(tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "SINE"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "SINE"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "LINE"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "LINE"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "LTR"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "LTR"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "Simple_repeat"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "Simples"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+
+tmp <- repeatai[mcols(repeatai)$Class == "Satellite"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "Satellite"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "Low_complexity"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "Low_complexity"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+reps2do <- c("DNA", "SINE", "LINE", "LTR", "Simples", "Satellite", "Low_complexity")
+
+suma <- function(x) {sum(x>0)}
+#reps2do <- mcols(repeatai)$Class %>% unique
+
+frakcijos_rep <- foreach(i=reps2do, .combine="rbind") %do% {
+  # kiek procentu CG pagavom 
+  # koks vidutinis modifikavimas
+  #i <- "LINE"
+  elementai <- tmp_annotations[tmp_annotations$type == i] %>% reduce
+  nCG <- countOverlaps(coverages_gr, elementai) %>% sum
+  frakcija <- foreach(j=samples2do_m, .combine="c") %do% {
+    (countOverlaps(coverages_gr[elementMetadata(coverages_gr)[, j]>0], elementai) %>% suma)/nCG
+  }
+  names(frakcija) <- samples2do_m
+  return(frakcija)
+}
+
+rownames(frakcijos_rep) <- reps2do
+
+p2 <- frakcijos_rep %>% 
+  melt() %>% 
+  as.data.table() %>% 
+  .[, Var1 := gsub("mm10_", "", Var1)] %>% 
+  .[, Var1 := gsub("_", "\n", Var1)] %>% 
+  ggplot(aes(Var1, value, fill=Var2)) +
+    geom_col(position="dodge") +
+    coord_flip() +
+    theme_bw() +
+    xlab("Element") +
+    ylab("Amount of CpGs, %") +
+    labs(fill="Mutant") +
+    scale_fill_brewer(palette="Dark2") +
+    theme(legend.position="bottom") +
+    scale_y_continuous(labels = scales::percent) +
+    ggtitle("Repeats elements. Target fraction")
+
+coveragas_rep <- foreach(i=reps2do, .combine="rbind") %do% {
+  # kiek procentu CG pagavom 
+  # koks vidutinis modifikavimas
+  #i <- "LINE"
+  elementai <- tmp_annotations[mcols(tmp_annotations)$type == i] %>% reduce
+  nCG <- countOverlaps(coverages_gr, elementai) %>% sum
+ 
+  coveragas <- foreach(j=samples2do_m, .combine="c") %do% {
+    coverages_gr[elementMetadata(coverages_gr)[, j]>0][countOverlaps(coverages_gr[elementMetadata(coverages_gr)[, j]>0], elementai)>0] %>% 
+      as.data.table() %>% 
+      .[, j, with=FALSE] %>% 
+      colMeans()
+  }
+  names(coveragas) <- samples2do_m
+  return(coveragas)
+}
+
+rownames(coveragas_rep) <- reps2do
+
+p4 <- coveragas_rep %>% 
+  melt() %>% 
+  as.data.table() %>% 
+  .[, Var1 := gsub("mm10_", "", Var1)] %>% 
+  .[, Var1 := gsub("_", "\n", Var1)] %>%   
+  ggplot(aes(Var1, value, fill=Var2)) +
+    geom_col(position="dodge") +
+    coord_flip() +
+    theme_bw() +
+    xlab("Element") +
+    ylab("Mean coverage") +
+    labs(fill="Mutant") +
+    scale_fill_brewer(palette="Dark2") +
+    theme(legend.position="bottom")  +
+    ggtitle("Repeats. Mean coverage")
+
+
+saveRDS(list(frakcijos_rep, coveragas_rep), paste0(outdatadir, "data_RepeatsFrac.RDS"))
+```
+
+
+```{r, fig.width=12, fig.height=8}
+p1 | p2 
+```
+
+
+
+```{r, fig.width=12, fig.height=8}
+p3 | p4
+```
+
+Alternative variant where average from all elements (per stage) is used as a base and different from the base is calculated. Repeats and other elements analysed individually. 
+
+Skipping some old graphs as they failed with new genomic elements.
+```{r, eval=FALSE}
+col_fun = colorRamp2(c(-1, 0, 1),viridis(3))
+
+ha = HeatmapAnnotation(
+    sample = colnames(frakcijos_gen),
+    col = list(sample = cols_samples[-4],
+    annotation_legend_param = list(
+        annotation_name_gp = gpar(fontsize = 12),
+        annotation_labels_gp = gpar(fontsize = 12),
+        sample = list(nrow = 1, 
+                      direction = "horizontal"))
+              ),
+    show_legend = c(FALSE)     
+)
+
+
+ht1 <- frakcijos_gen[, ] %>% 
+  scale %>% 
+  Heatmap(., cluster_columns=FALSE,  
+             name = "standardized dif.",
+             col = col_fun, 
+             top_annotation = ha, 
+             heatmap_legend_param = list(
+               legend_direction = "horizontal", 
+               legend_width = unit(6, "cm")))
+
+
+ht2 <- frakcijos_rep[, ] %>% 
+  scale %>% 
+  Heatmap(., cluster_columns=FALSE,  
+             name = "standardized dif.",
+             col = col_fun, 
+             top_annotation = ha,               
+             heatmap_legend_param = list(
+               legend_direction = "horizontal", 
+               legend_width = unit(6, "cm")))
+
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(nr = 1, nc = 2)))
+
+pushViewport(viewport(layout.pos.row = 1, layout.pos.col = 1))
+draw(ht1, heatmap_legend_side = "bottom", newpage = FALSE)
+upViewport()
+
+pushViewport(viewport(layout.pos.row = 1, layout.pos.col = 2))
+draw(ht2, heatmap_legend_side = "bottom", newpage = FALSE)
+upViewport()
+```
+
+
+Same for coverages:
+
+```{r, eval=FALSE}
+ht1 <- coveragas_gen[, ] %>% 
+  scale %>% 
+  Heatmap(., cluster_columns=FALSE,  
+             name = "standardized dif.",
+             col = col_fun, 
+             top_annotation = ha, 
+             heatmap_legend_param = list(
+               legend_direction = "horizontal", 
+               legend_width = unit(6, "cm")))
+
+
+ht2 <- coveragas_rep[, ] %>% 
+  scale %>% 
+  Heatmap(., cluster_columns=FALSE,  
+             name = "standardized dif.",
+             col = col_fun, 
+             top_annotation = ha, 
+             heatmap_legend_param = list(
+               legend_direction = "horizontal", 
+               legend_width = unit(6, "cm")))
+
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(nr = 1, nc = 2)))
+
+pushViewport(viewport(layout.pos.row = 1, layout.pos.col = 1))
+draw(ht1, heatmap_legend_side = "bottom", newpage = FALSE)
+upViewport()
+
+pushViewport(viewport(layout.pos.row = 1, layout.pos.col = 2))
+draw(ht2, heatmap_legend_side = "bottom", newpage = FALSE)
+upViewport()
+```
+
+
+In these heatmaps normal scaling is used: each row is scaled individually. 
+
+
+```{r, eval=FALSE}
+ht1 <- frakcijos_gen[, ] %>% 
+  t() %>% 
+  scale %>% 
+  t() %>%  
+  Heatmap(., cluster_columns=FALSE,  
+             name = "standardized dif.",
+             col = col_fun, 
+             top_annotation = ha, 
+             heatmap_legend_param = list(
+               legend_direction = "horizontal", 
+               legend_width = unit(6, "cm")))
+
+
+ht2 <- frakcijos_rep[, ] %>% 
+  t() %>% 
+  scale %>%
+  t() %>%  
+  Heatmap(., cluster_columns=FALSE,  
+             name = "standardized dif.",
+             col = col_fun, 
+             top_annotation = ha, 
+             heatmap_legend_param = list(
+               legend_direction = "horizontal", 
+               legend_width = unit(6, "cm")))
+
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(nr = 1, nc = 2)))
+
+pushViewport(viewport(layout.pos.row = 1, layout.pos.col = 1))
+draw(ht1, heatmap_legend_side = "bottom", newpage = FALSE)
+upViewport()
+
+pushViewport(viewport(layout.pos.row = 1, layout.pos.col = 2))
+draw(ht2, heatmap_legend_side = "bottom", newpage = FALSE)
+upViewport()
+
+```
+
+
+Same for coverages:
+
+```{r, eval=FALSE}
+ht1 <- coveragas_gen[, ] %>% 
+  t() %>% 
+  scale %>%
+  t() %>%  
+  Heatmap(., cluster_columns=FALSE,  
+             name = "standardized dif.",
+             col = col_fun, 
+             top_annotation = ha, 
+             heatmap_legend_param = list(
+               legend_direction = "horizontal", 
+               legend_width = unit(6, "cm")))
+
+
+ht2 <- coveragas_rep[, ] %>% 
+  t() %>% 
+  scale %>%
+  t() %>%  
+  Heatmap(., cluster_columns=FALSE,  
+             name = "standardized dif.",
+             col = col_fun, 
+             top_annotation = ha, 
+             heatmap_legend_param = list(
+               legend_direction = "horizontal", 
+               legend_width = unit(6, "cm")))
+
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(nr = 1, nc = 2)))
+
+pushViewport(viewport(layout.pos.row = 1, layout.pos.col = 1))
+draw(ht1, heatmap_legend_side = "bottom", newpage = FALSE)
+upViewport()
+
+pushViewport(viewport(layout.pos.row = 1, layout.pos.col = 2))
+draw(ht2, heatmap_legend_side = "bottom", newpage = FALSE)
+upViewport()
+```

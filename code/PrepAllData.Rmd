@@ -1,0 +1,671 @@
+```{r}
+library(pacman)
+p_load(data.table, dplyr, ggplot2, rtracklayer, RColorBrewer, scales, foreach, 
+viridis, annotatr, stringr)
+options(scipen=999)
+knitr::opts_chunk$set(fig.width=9, fig.height=7)
+dir.create(outdatadir, recursive=TRUE)
+source("./code/common.R", chdir = FALSE)
+
+
+############################################### PATHS to DATA 
+
+path_promoters_EPD <- "Mm_EPDnew_003_mm10.bed"
+path_promoters_EPD_ref <- "cross_references.txt"
+path_promoters_EPD_nc <- "MmNC_EPDnew_001_mm10.bed"
+path_GTF <- "gencode.vM23.annotation.gtf"
+path_H3K4me1 <- "ENCFF462XPD.bigBed"
+path_H3K27ac <- "ENCFF188LEW.bigBed"
+path_superEnhancers <- "SE_12_0619_SE_ele_mm10_noHeader.bed"
+path_silencers_E14 <- "Mus_musculus_ES-E14_mm10.bed"
+path_silencers_mESC <- "Mus_musculus_mESC_mm10.bed"
+path_CTCF <- "ENCFF832AQF.bigBed"
+path_lnCRNA <- "gencode.vM23.long_noncoding_RNAs.gtf"
+path_transcripts <- "GRCm38_transcripts.RefSeq_Select.bed"
+path_repeats <- "UCSC_data/rmsk.txt.gz"
+path_blackList <- "mm10-blacklist.v2.bed"
+path_dCG <- "CG_data_onC.RDS"
+
+
+```
+
+Data preparation. Intentionally left blank. 
+
+# Anotacija
+```{r}
+if(!file.exists(paste0(outdatadir, "dAnnotations.RDS"))) {
+  #############################################################################
+  #### General annotation 
+  #############################################################################
+  annots = c('mm10_cpgs', 'mm10_basicgenes', 'mm10_genes_intergenic', 'mm10_enhancers_fantom', 
+             'mm10_genes_firstexons', 'mm10_genes_cds', 'mm10_lncrna_gencode')
+  annotations <- build_annotations(genome = 'mm10', annotations = annots)
+  annotations <- keepStandardChromosomes(annotations, pruning.mode="coarse", species="Mus musculus")
+  ######
+  ## unmassked CGI  - there were some problems with rtracklayer. Got error failed to obtain hguid
+  #CGI_unmaseked <- tmp[["anotacijos"]][mcols(tmp[["anotacijos"]])$type == "mm10_cpgUnmsk_UCSC"]
+  #saveRDS(CGI_unmaseked, paste0(outdatadir, "CGI_unmasked_UCSC.RDS"))
+  CpG_unmasked <- readRDS(paste0("input/", "CGI_unmasked_UCSC.RDS"))
+  mcols(CpG_unmasked) <- NULL
+  mcols(CpG_unmasked)$id <- paste0("cpg_nonMaesked:", 1:length(CpG_unmasked))
+  mcols(CpG_unmasked)$tx_id <- NA
+  mcols(CpG_unmasked)$gene_id <- NA
+  mcols(CpG_unmasked)$symbol <- NA
+  mcols(CpG_unmasked)$type <- "mm10_cpgUnmsk_UCSC"
+  CpG_unmasked <- keepStandardChromosomes(CpG_unmasked, pruning.mode="coarse", species="Mus musculus")
+
+  #############################################################################
+  #### Promoters from EPD coding
+  #############################################################################
+  promoters_EPD <-  fread(path_promoters_EPD) %>% 
+    setnames(., c("chr", "start", "end", "name", "score", "strand", "start2", "end2") ) %>% 
+    .[, start := start + 1 ] %>% 
+    .[, start2 := NULL] %>% 
+    .[, end2 := NULL] %>% 
+    .[, score := NULL] %>%
+    .[grepl("_1$", name)] %>%  
+    .[, name := gsub("_[0-9]*", "", name)] %>% 
+    .[, chr := gsub("chr", "", chr)] %>% 
+    merge(., fread(path_promoters_EPD_ref, header=FALSE), by.x="name", by.y="V2") %>% 
+  .[, V4 := as.character(V4)] %>% 
+  .[, MGI := str_split(V4, ":") %>% sapply(., `[`, 4) %>% as.character %>% gsub("]", "", .)] %>% 
+  .[, MGI := paste0("MGI:", MGI)] %>%
+    makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+  geneSymbol <- mcols(promoters_EPD)$name %>% gsub("_[0-9]*", "", .)
+  geneID <- mcols(promoters_EPD)$V1 
+  mcols(promoters_EPD) <- NULL
+  mcols(promoters_EPD)$id <- paste0("promoter:", 1:length(promoters_EPD))
+  mcols(promoters_EPD)$tx_id <- NA
+  mcols(promoters_EPD)$gene_id <- geneID
+  mcols(promoters_EPD)$symbol <- geneSymbol
+  mcols(promoters_EPD)$type <- "mm10_EPDpromoters"
+  promoters_EPD <- keepStandardChromosomes(promoters_EPD, pruning.mode="coarse", species="Mus musculus")
+  promoters_EPD <- promoters_EPD+1000
+  seqlevelsStyle(promoters_EPD) <- "UCSC"
+
+  #############################################################################
+  #### Promoters from EPD non-coding 
+  #############################################################################
+  promoters_EPD_nc <- fread(path_promoters_EPD_nc) %>% 
+    setnames(., c("chr", "start", "end", "name", "score", "strand", "start2", "end2") ) %>% 
+    .[, start := start + 1 ] %>% 
+    .[, start2 := NULL] %>% 
+    .[, end2 := NULL] %>% 
+    .[, score := NULL] %>%
+    .[grepl("_1$", name)] %>%  
+    .[, name := gsub("_[0-9]*", "", name)] %>% 
+    .[, chr := gsub("chr", "", chr)] %>% 
+    merge(., fread(path_promoters_EPD_ref, header=FALSE), by.x="name", by.y="V2") %>% 
+  .[, V4 := as.character(V4)] %>% 
+  .[, MGI := str_split(V4, ":") %>% sapply(., `[`, 4) %>% as.character %>% gsub("]", "", .)] %>% 
+  .[, MGI := paste0("MGI:", MGI)] %>%
+    makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+  geneSymbol <- mcols(promoters_EPD_nc)$name %>% gsub("_[0-9]*", "", .)
+  geneID <- mcols(promoters_EPD_nc)$V1
+  mcols(promoters_EPD_nc) <- NULL
+  mcols(promoters_EPD_nc)$id <- paste0("promoter_nc:", 1:length(promoters_EPD_nc))
+  mcols(promoters_EPD_nc)$tx_id <- NA
+  mcols(promoters_EPD_nc)$gene_id <- geneID
+  mcols(promoters_EPD_nc)$symbol <- geneSymbol
+  mcols(promoters_EPD_nc)$type <- "mm10_EPDpromotersNC"
+  promoters_EPD_nc <- keepStandardChromosomes(promoters_EPD_nc, pruning.mode="coarse", species="Mus musculus")
+  promoters_EPD_nc <- promoters_EPD_nc+1000
+  seqlevelsStyle(promoters_EPD_nc) <- "UCSC"
+
+  #############################################################################
+  #### Protein coding genes
+  #############################################################################
+  GTF <- import(path_GTF)
+  GTF <- keepStandardChromosomes(GTF, pruning.mode="coarse", species="Mus musculus") 
+  GTF <- GTF[seqnames(GTF) %in% paste0("chr", c(1:19, "X", "Y"))]
+  seqlevels(GTF) <- seqlevelsInUse(GTF)
+  proteinCoding <- GTF[mcols(GTF)$type == "gene" & mcols(GTF)$gene_type == "protein_coding"]
+  geneID <-   mcols(proteinCoding)$gene_id %>% gsub("\\.[0-9]*$", "", .)
+  symbol <- mcols(proteinCoding)$gene_name 
+  mcols(proteinCoding) <- NULL
+  mcols(proteinCoding)$id <- paste0("proteinCoding", 1:length(proteinCoding))
+  mcols(proteinCoding)$tx_id <- NA
+  mcols(proteinCoding)$gene_id <- geneID
+  mcols(proteinCoding)$symbol <- symbol
+  mcols(proteinCoding)$type <- "mm10_proteinCoding"
+  proteinCoding <- keepStandardChromosomes(proteinCoding, pruning.mode="coarse", species="Mus musculus")
+  seqlevelsStyle(proteinCoding) <- "UCSC"
+
+  #############################################################################
+  #### Enhancers E14
+  #############################################################################
+  enhancers <- import("/mnt/store/annotations/MusMusculus_mm10_Ensembl/EnhancersAtlas/E14_mm10.bed")
+  mcols(enhancers) <- NULL
+  mcols(enhancers)$id <- paste0("enhancer:", 1:length(enhancers))
+  mcols(enhancers)$tx_id <- NA
+  mcols(enhancers)$gene_id <- NA
+  mcols(enhancers)$symbol <- NA
+  mcols(enhancers)$type <- "mm10_enhancers"
+  enhancers <- keepStandardChromosomes(enhancers, pruning.mode="coarse", species="Mus musculus")
+  seqlevelsStyle(enhancers) <- "UCSC"
+
+  #############################################################################
+  #### active enhancers
+  #############################################################################
+  H3K4me1 <- import(path_H3K4me1)
+  H3K27ac <- import(path_H3K27ac)
+  enhanc_tmp <- annotations[mcols(annotations)$type == "mm10_enhancers_fantom"]
+  mcols(enhanc_tmp)$activity <- "other"
+  mcols(enhanc_tmp)$activity[countOverlaps(enhanc_tmp, H3K4me1) > 0 ] <- "poised"
+  mcols(enhanc_tmp)$activity[countOverlaps(enhanc_tmp, H3K27ac) > 0 ] <- "active"
+  enhanc_tmp <- enhanc_tmp[mcols(enhanc_tmp)$activity != "other"]
+  active_enhanceriai <- enhanc_tmp[mcols(enhanc_tmp)$activity == "active"]
+  mcols(active_enhanceriai) <- NULL
+  mcols(active_enhanceriai)$id <- paste0("enhancer:", 1:length(active_enhanceriai))
+  mcols(active_enhanceriai)$tx_id <- NA
+  mcols(active_enhanceriai)$gene_id <- NA
+  mcols(active_enhanceriai)$symbol <- NA
+  mcols(active_enhanceriai)$type <- "mm10_ActiveEnhancers_fantom"
+  active_enhanceriai <- keepStandardChromosomes(active_enhanceriai, pruning.mode="coarse", species="Mus musculus")
+  seqlevelsStyle(active_enhanceriai) <- "UCSC"
+  
+  #############################################################################
+  #### poised enhancers
+  #############################################################################
+  poised_enhanceriai <- enhanc_tmp[mcols(enhanc_tmp)$activity == "poised"]
+  mcols(poised_enhanceriai) <- NULL
+  mcols(poised_enhanceriai)$id <- paste0("enhancer:", 1:length(poised_enhanceriai))
+  mcols(poised_enhanceriai)$tx_id <- NA
+  mcols(poised_enhanceriai)$gene_id <- NA
+  mcols(poised_enhanceriai)$symbol <- NA
+  mcols(poised_enhanceriai)$type <- "mm10_PoisedEnhancers_fantom"
+  poised_enhanceriai <- keepStandardChromosomes(poised_enhanceriai, pruning.mode="coarse", species="Mus musculus")
+  seqlevelsStyle(poised_enhanceriai) <- "UCSC"
+
+  #############################################################################
+  #### active enhancers
+  #############################################################################
+  H3K4me1 <- import(path_H3K4me1)
+  H3K27ac <- import(path_H3K27ac)
+  enhanc_tmp <- copy(enhancers)
+  mcols(enhanc_tmp)$activity <- "other"
+  mcols(enhanc_tmp)$activity[countOverlaps(enhanc_tmp, H3K4me1) > 0 ] <- "poised"
+  mcols(enhanc_tmp)$activity[countOverlaps(enhanc_tmp, H3K27ac) > 0 ] <- "active"
+  enhanc_tmp <- enhanc_tmp[mcols(enhanc_tmp)$activity != "other"]
+  active_enhanceriai2 <- enhanc_tmp[mcols(enhanc_tmp)$activity == "active"]
+  mcols(active_enhanceriai2) <- NULL
+  mcols(active_enhanceriai2)$id <- paste0("enhancer:", 1:length(active_enhanceriai2))
+  mcols(active_enhanceriai2)$tx_id <- NA
+  mcols(active_enhanceriai2)$gene_id <- NA
+  mcols(active_enhanceriai2)$symbol <- NA
+  mcols(active_enhanceriai2)$type <- "mm10_ActiveEnhancers_Atlas"
+  active_enhanceriai2 <- keepStandardChromosomes(active_enhanceriai2, pruning.mode="coarse", species="Mus musculus")
+  seqlevelsStyle(active_enhanceriai2) <- "UCSC"
+  
+  #############################################################################
+  #### poised enhancers
+  #############################################################################
+  poised_enhanceriai2 <- enhanc_tmp[mcols(enhanc_tmp)$activity == "poised"]
+  mcols(poised_enhanceriai2) <- NULL
+  mcols(poised_enhanceriai2)$id <- paste0("enhancer:", 1:length(poised_enhanceriai2))
+  mcols(poised_enhanceriai2)$tx_id <- NA
+  mcols(poised_enhanceriai2)$gene_id <- NA
+  mcols(poised_enhanceriai2)$symbol <- NA
+  mcols(poised_enhanceriai2)$type <- "mm10_PoisedEnhancers_Atlas"
+  poised_enhanceriai2 <- keepStandardChromosomes(poised_enhanceriai2, pruning.mode="coarse", species="Mus musculus")
+  seqlevelsStyle(poised_enhanceriai2) <- "UCSC"
+
+  #############################################################################
+  #### SuperEnhancers
+  #############################################################################
+  extraCols_narrowPeak <- c(ID = "character")
+  feat2do <- import(path_superEnhancers, format="BED", extraCols=extraCols_narrowPeak) 
+  mcols(feat2do) <- NULL
+  mcols(feat2do)$id <- paste0("SE:", 1:length(feat2do))
+  mcols(feat2do)$tx_id <- NA
+  mcols(feat2do)$gene_id <- NA
+  mcols(feat2do)$symbol <- NA
+  mcols(feat2do)$type <- "mm10_superEnhancer"
+  SuperEnhancers <- keepStandardChromosomes(feat2do, pruning.mode="coarse", species="Mus musculus")
+  seqlevelsStyle(SuperEnhancers) <- "UCSC"
+
+  #############################################################################
+  #### silencers
+  #############################################################################
+  extraCols_narrowPeak <- c(ID = "character")
+  feat2do <- import(path_silencers, format="BED", extraCols=extraCols_narrowPeak)
+  mcols(feat2do) <- NULL
+  mcols(feat2do)$id <- paste0("Silencer_E14:", 1:length(feat2do))
+  mcols(feat2do)$tx_id <- NA
+  mcols(feat2do)$gene_id <- NA
+  mcols(feat2do)$symbol <- NA
+  mcols(feat2do)$type <- "mm10_Silencer_E14"
+  Silencer_E14 <- keepStandardChromosomes(feat2do, pruning.mode="coarse", species="Mus musculus")
+  seqlevelsStyle(Silencer_E14) <- "UCSC"
+
+  extraCols_narrowPeak <- c(ID = "character")
+  feat2do <- import(path_silencers_mESC, format="BED", extraCols=extraCols_narrowPeak)
+  mcols(feat2do) <- NULL
+  mcols(feat2do)$id <- paste0("SE_mESC:", 1:length(feat2do))
+  mcols(feat2do)$tx_id <- NA
+  mcols(feat2do)$gene_id <- NA
+  mcols(feat2do)$symbol <- NA
+  mcols(feat2do)$type <- "mm10_Silencer_mESC"
+  Silencer_mESC <- keepStandardChromosomes(feat2do, pruning.mode="coarse", species="Mus musculus")
+  seqlevelsStyle(Silencer_mESC) <- "UCSC"
+
+  #############################################################################
+  #### CTCF
+  #############################################################################
+  tmp <- import(path_CTCF)
+  mcols(tmp) <- NULL
+  mcols(tmp)$id <- paste0("CTCF:", 1:length(tmp))
+  mcols(tmp)$tx_id <- NA
+  mcols(tmp)$gene_id <- NA
+  mcols(tmp)$symbol <- NA
+  mcols(tmp)$type <- "mm10_CTCF"
+  CTCF <- keepStandardChromosomes(tmp, pruning.mode="coarse", species="Mus musculus")
+  seqlevelsStyle(CTCF) <- "UCSC"
+  
+  #############################################################################
+  #### lncRNA
+  #############################################################################
+  lncRNA <- import(path_lnCRNA)
+  lncRNA <- lncRNA[mcols(lncRNA)$type == "gene"]
+  temp <- lncRNA$gene_id
+  temp2 <- lncRNA$gene_name
+  mcols(lncRNA) <- NULL
+  mcols(lncRNA)$id <- paste0("lnRNA_mESC:", 1:length(lncRNA))
+  mcols(lncRNA)$tx_id <- NA
+  mcols(lncRNA)$gene_id <- temp
+  mcols(lncRNA)$symbol <- temp2
+  mcols(lncRNA)$type <- "mm10_lncRNA_vM23"
+  lncRNA <- keepStandardChromosomes(lncRNA, pruning.mode="coarse", species="Mus musculus")
+  seqlevelsStyle(lncRNA) <- "UCSC"
+
+  #############################################################################
+  #### Processed_pseudogene
+  #############################################################################  
+  processed_pseudogene <- GTF[mcols(GTF)$type == "gene" & mcols(GTF)$gene_type == "processed_pseudogene"]
+  temp <- processed_pseudogene$gene_id
+  temp2 <- processed_pseudogene$gene_name
+  mcols(processed_pseudogene) <- NULL
+  mcols(processed_pseudogene)$id <- paste0("PseudoProcessed:", 1:length(processed_pseudogene))
+  mcols(processed_pseudogene)$tx_id <- NA
+  mcols(processed_pseudogene)$gene_id <- temp
+  mcols(processed_pseudogene)$symbol <- temp2
+  mcols(processed_pseudogene)$type <- "mm10_processedPseudogene"
+  processed_pseudogene <- keepStandardChromosomes(processed_pseudogene, pruning.mode="coarse", species="Mus musculus")
+  seqlevelsStyle(processed_pseudogene) <- "UCSC"
+
+  #############################################################################
+  #### UnProcessed_pseudogene
+  #############################################################################
+  unprocessed_pseudogene <- GTF[mcols(GTF)$type == "gene" & mcols(GTF)$gene_type == "unprocessed_pseudogene"]
+  temp <- unprocessed_pseudogene$gene_id
+  temp2 <- unprocessed_pseudogene$gene_name
+  mcols(unprocessed_pseudogene) <- NULL
+  mcols(unprocessed_pseudogene)$id <- paste0("UnPseudoProcessed:", 1:length(unprocessed_pseudogene))
+  mcols(unprocessed_pseudogene)$tx_id <- NA
+  mcols(unprocessed_pseudogene)$gene_id <- temp
+  mcols(unprocessed_pseudogene)$symbol <- temp2
+  mcols(unprocessed_pseudogene)$type <- "mm10_UnProcessedPseudogene"
+  unprocessed_pseudogene <- keepStandardChromosomes(unprocessed_pseudogene, pruning.mode="coarse", species="Mus musculus")
+  seqlevelsStyle(unprocessed_pseudogene) <- "UCSC"
+
+  #############################################################################
+  #### transcripts
+  #############################################################################
+  chromosomos <- c(
+    "NC_000067.6"="chr1",
+    "NC_000068.7"="chr2",
+    "NC_000069.6"="chr3",
+    "NC_000070.6"="chr4",
+    "NC_000071.6"="chr5",
+    "NC_000072.6"="chr6",
+    "NC_000073.6"="chr7",
+    "NC_000074.6"="chr8",
+    "NC_000075.6"="chr9",
+    "NC_000076.6"="chr10",
+    "NC_000077.6"="chr11",
+    "NC_000078.6"="chr12",
+    "NC_000079.6"="chr13",
+    "NC_000080.6"="chr14",
+    "NC_000081.6"="chr15",
+    "NC_000082.6"="chr16",
+    "NC_000083.6"="chr17",
+    "NC_000084.6"="chr18",
+    "NC_000085.6"="chr19")
+
+  transkriptai <- import(path_transcripts) %>% 
+  as.data.table() %>% 
+  .[seqnames %in% names(chromosomos), ] %>% 
+  .[, seqnames := factor(seqnames, levels=names(chromosomos), labels=chromosomos)] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+  temp <- transkriptai$name
+  mcols(transkriptai) <- NULL
+  mcols(transkriptai)$id <- paste0("transkriptai:", 1:length(transkriptai))
+  mcols(transkriptai)$tx_id <- NA
+  mcols(transkriptai)$gene_id <- temp
+  mcols(transkriptai)$symbol <- NA
+  mcols(transkriptai)$type <- "mm10_transcriptsCoding"
+  transkriptai <- keepStandardChromosomes(transkriptai, pruning.mode="coarse", species="Mus musculus")
+  seqlevelsStyle(transkriptai) <- "UCSC"
+
+  #############################################################################
+  #### Combine all data
+  #############################################################################
+  annotations <- c(annotations, CpG_unmasked, promoters_EPD, promoters_EPD_nc, enhancers, proteinCoding, 
+                   active_enhanceriai, active_enhanceriai2, poised_enhanceriai, poised_enhanceriai2, SuperEnhancers, Silencer_E14, Silencer_mESC, 
+                   CTCF, lncRNA, processed_pseudogene, unprocessed_pseudogene, transkriptai)
+  seqlevelsStyle(annotations) <- "UCSC"
+
+  repeatai <- fread(path_repeats) %>% .[, .(V6, V7, V8, V10, V11, V12, V13)] %>% 
+  setnames(., c("chr", "start", "end", "strand", "Name", "Class", "Familly")) %>% 
+  makeGRangesFromDataFrame(., keep.extra.columns=TRUE)
+  repeatai <- keepStandardChromosomes(repeatai, pruning.mode="coarse", species="Mus musculus")
+  seqlevelsStyle(repeatai) <- "UCSC"
+
+  blackListed <- import(path_blackList)
+  blackListed <- keepStandardChromosomes(blackListed, pruning.mode="coarse", species="Mus musculus")
+  seqlevelsStyle(blackListed) <- "UCSC"
+
+saveRDS(list(repeatai=repeatai, anotacijos=annotations, blacklisted=blackListed), paste0(outdatadir, "dAnnotations.RDS")) }
+```
+
+###############################################################################
+###############################################################################
+################### WGBS versus RRBS
+###############################################################################
+###############################################################################
+
+```{r}
+# Setup directories and functions
+dir_WGBS <- "./input/WGBS_LIF/"
+dir_RRBS <- "./input/RRBS_LIF/"
+get_id <- function(x) {return(paste0(seqnames(x), "_", start(x), "_", end(x)))}
+
+if(!(file.exists(paste0(outdatadir, "WGBS_vs_RRBS_data.RDS")))) {
+  # Read in RRBS and WGBS
+  B2_WGBS <- import(paste0(dir_WGBS, "B2_bWGBS_merged.bedGraph"))
+  names(mcols(B2_WGBS)) <- c("Met", "C", "T")  
+  mcols(B2_WGBS)$ID <- get_id(B2_WGBS)
+  
+  Da31_WGBS <- import(paste0(dir_WGBS, "Da31_merged.bedGraph"))
+  names(mcols(Da31_WGBS)) <- c("Met", "C", "T")  
+  mcols(Da31_WGBS)$ID <- get_id(Da31_WGBS)
+  
+  dWT_WGBS <- import(paste0(dir_WGBS, "dWT_merged.bedGraph"))
+  names(mcols(dWT_WGBS)) <- c("Met", "C", "T")
+  mcols(dWT_WGBS)$ID <- get_id(dWT_WGBS)
+  
+  KO3_WGBS <- import(paste0(dir_WGBS, "KO3_WGBS_merged.bedGraph"))
+  names(mcols(KO3_WGBS)) <- c("Met", "C", "T")
+  mcols(KO3_WGBS)$ID <- get_id(KO3_WGBS)
+  
+  dA32_RRBS <- import(paste0(dir_RRBS, "dA32_merged.bedGraph"))
+  names(mcols(dA32_RRBS)) <- c("Met", "C", "T")
+  mcols(dA32_RRBS)$ID <- get_id(dA32_RRBS)
+  
+  B2_RRBS <- import(paste0(dir_RRBS, "B2_RRBS_merged.bedGraph"))
+  names(mcols(B2_RRBS)) <- c("Met", "C", "T")
+  mcols(B2_RRBS)$ID <- get_id(B2_RRBS)
+
+  dCG <- readRDS(path_dCG)
+  seqlevelsStyle(dCG) <- "UCSC"
+  dCG <- dCG[seqnames(dCG) %in% c(paste0("chr", 1:19), "chrX", "chrY")]
+  seqlevels(dCG) <- seqlevelsInUse(dCG)
+
+  mcols(dCG) <- NULL
+  dCG <- dCG[strand(dCG) == "+"]
+  mcols(dCG)$ID <- paste0(seqnames(dCG), "_", start(dCG),  "_", (start(dCG)+1)) 
+
+  # Make huge table with all data
+  d2 <- merge(
+     as.data.table(B2_RRBS) %>% .[, .(C, T, ID)]  %>% .[, RRBS_homo_cov := C + T] %>% .[, RRBS_homo_met := C / (C+T)*100] %>% setnames("C", "RRBS_homo_C") %>% setnames("T", "RRBS_homo_T"), 
+     as.data.table(dA32_RRBS) %>% .[, .(C, T, ID)]  %>% .[, RRBS_hetero_cov := C + T] %>% .[, RRBS_hetero_met := C / (C+T)*100] %>% setnames("C", "RRBS_hetero_C") %>% setnames("T", "RRBS_hetero_T"), by="ID", all=TRUE ) %>% 
+     merge(., as.data.table(KO3_WGBS) %>% .[, .(C, T, ID)]  %>% .[, WGBS_KO_cov := C + T] %>% .[, WGBS_KO_met := C / (C+T)*100] %>% setnames("C", "WGBS_KO_C") %>% setnames("T", "WGBS_KO_T"), by="ID", all=TRUE ) %>% 
+     merge(., as.data.table(dWT_WGBS) %>% .[, .(C, T, ID)]  %>% .[, WGBS_WT_cov := C + T] %>% .[, WGBS_WT_met := C / (C+T)*100] %>% setnames("C", "WGBS_WT_C") %>% setnames("T", "WGBS_WT_T"), by="ID", all=TRUE ) %>% 
+     merge(., as.data.table(Da31_WGBS) %>% .[, .(C, T, ID)]  %>% .[, WGBS_hetero_cov := C + T] %>% .[, WGBS_hetero_met := C / (C+T)*100] %>% setnames("C", "WGBS_hetero_C") %>% setnames("T", "WGBS_hetero_T"), by="ID", all=TRUE ) %>%          
+     merge(., as.data.table(B2_WGBS) %>% .[, .(C, T, ID)]  %>% .[, WGBS_homo_cov := C + T] %>% .[, WGBS_homo_met := C / (C+T)*100] %>% setnames("C", "WGBS_homo_C") %>% setnames("T", "WGBS_homo_T"), by="ID", all=TRUE ) %>% 
+     merge(., as.data.table(dCG) %>% .[, .(ID)], all=TRUE, by="ID") %>% 
+     .[!grepl("[M]", ID), ] 
+
+  total_cov <- d2[, .(ID, RRBS_homo_cov, RRBS_hetero_cov, WGBS_KO_cov, WGBS_WT_cov, WGBS_hetero_cov, WGBS_homo_cov)]
+  setkey(total_cov, "ID")
+  methylation <- d2[, .(ID, RRBS_homo_met, RRBS_hetero_met, WGBS_KO_met, WGBS_WT_met, WGBS_hetero_met, WGBS_homo_met)]
+  setkey(methylation, "ID")
+  stopifnot("Cov and met IDs do not match" = all(total_cov$ID == methylation$ID))
+  setkey(d2, "ID") 
+
+  cov_gr_full <- total_cov %>% 
+    .[, chr := strsplit(ID, "_") %>% sapply(., `[`, 1)] %>% 
+    .[, start := strsplit(ID, "_") %>% sapply(., `[`, 2)] %>% 
+    .[, end := strsplit(ID, "_") %>% sapply(., `[`, 3)] %>% 
+    makeGRangesFromDataFrame(., keep.extra.columns=TRUE)
+  met_gr_full <- methylation %>% 
+    as.data.table() %>% 
+    .[, chr := strsplit(ID, "_") %>% sapply(., `[`, 1)] %>% 
+    .[, start := strsplit(ID, "_") %>% sapply(., `[`, 2)] %>% 
+    .[, end := strsplit(ID, "_") %>% sapply(., `[`, 3)] %>% 
+    makeGRangesFromDataFrame(., keep.extra.columns=TRUE)
+  RRBS_hom <- total_cov$RRBS_homo_cov < 5
+  RRBS_hom[is.na(RRBS_hom)] <- TRUE
+  RRBS_het <- total_cov$RRBS_hetero_cov < 5
+  RRBS_het[is.na(RRBS_het)] <- TRUE
+  WGBS_KO <- total_cov$WGBS_KO_cov < 5
+  WGBS_KO[is.na(WGBS_KO)] <- TRUE
+  WGBS_wet <- total_cov$WGBS_WT_cov < 5
+  WGBS_wet[is.na(WGBS_wet)] <- TRUE
+  WGBS_het <- total_cov$WGBS_hetero_cov < 5
+  WGBS_het[is.na(WGBS_het)] <- TRUE
+  WGBS_hom <- total_cov$WGBS_homo_cov < 5
+  WGBS_hom[is.na(WGBS_hom)] <- TRUE
+  met_gr_threshold <- methylation %>% 
+    as.data.table() %>% 
+    .[RRBS_hom, RRBS_homo_met := NA] %>% 
+    .[RRBS_het, RRBS_hetero_met := NA] %>% 
+    .[WGBS_KO, WGBS_KO_met := NA] %>% 
+    .[WGBS_wet, WGBS_WT_met := NA] %>% 
+    .[WGBS_het, WGBS_hetero_met := NA] %>% 
+    .[WGBS_hom , WGBS_homo_met := NA] %>% 
+    .[, chr := strsplit(ID, "_") %>% sapply(., `[`, 1)] %>% 
+    .[, start := strsplit(ID, "_") %>% sapply(., `[`, 2)] %>% 
+    .[, end := strsplit(ID, "_") %>% sapply(., `[`, 3)] %>% 
+    makeGRangesFromDataFrame(., keep.extra.columns=TRUE)
+
+  saveRDS(list(methylation_full_dt=methylation, 
+               methylation_gr_th=met_gr_threshold, methylation_gr_full=met_gr_full, 
+               raw=d2), paste0(outdatadir, "WGBS_vs_RRBS_data.RDS")) }
+```
+
+###############################################################################
+###############################################################################
+################### Mutantai
+###############################################################################
+###############################################################################
+
+```{r}
+# Dnmt1 TopSEQ
+configs <- fread("data_prep/config_torrent.yaml", header=FALSE) 
+wdir <- configs[V1 == "workdir:", V2]
+
+samplesInfo <- fread("input/samples_info.txt") %>% 
+  .[USE == "E2", ] %>% 
+  .[, replicate := str_extract(ID, "R.$")] %>% 
+  .[, condition := gsub("_R[0-9]", "", ID)] %>% 
+  .[ID != "Het_R1", ]
+samples2do <- samplesInfo$ID
+samples2do_m <- c("WT", "Het", "Hom")
+
+if(!file.exists(paste0(outdatadir, "mutantai_TopData.RDS"))) {
+  #if(!file.exists(paste0(outdatadir, "dCG.RDS"))) {
+  dCG <- readRDS(path_dCG)
+  dCG <- dCG[strand(dCG) == "+"]
+  strand(dCG) <- "*"
+  mcols(dCG)$ID <- gsub("_[+-]_[GC]+", "", mcols(dCG)$cname)
+  mcols(dCG)$cname <- NULL
+
+  d <- foreach(i=samples2do) %dopar% {
+  return(get_data(i, wdir, outdatadir, dCG))}
+  names(d) <- samples2do
+  saveRDS(d, paste0(outdatadir, "mutantai_TopData.RDS"))
+} 
+
+
+if(!(file.exists(paste0(outdatadir, "mutantai_coverages2useTopData.RDS")))) {
+# coverage table
+  d <- readRDS(paste0(outdatadir, "mutantai_TopData.RDS"))
+  coverages <- foreach(i=names(d), .combine="cbind") %do% {
+    d[[i]][[2]] %>% 
+      as.data.table %>% 
+      .[, .(N)] %>%
+      setnames("N", i)
+  } %>% cbind(d[[1]][[2]][, .(chr, start, ID)], .)
+
+  coverages$Het <- coverages[, samplesInfo[condition == "Het", NAME], with=FALSE] %>% rowSums
+  coverages$Hom <- coverages[, samplesInfo[condition == "Hom", NAME], with=FALSE] %>% rowSums
+  coverages$WT <- coverages[, samplesInfo[condition == "WT", NAME], with=FALSE] %>% rowSums
+  coverages <- coverages[chr %in% paste0("chr", c(1:19, "X", "Y"))]
+
+saveRDS(coverages, paste0(outdatadir, "mutantai_coverages2useTopData.RDS")) }
+```
+###############################################################################
+###############################################################################
+################### 4 points
+###############################################################################
+###############################################################################
+
+
+```{r}
+# Dnmt2 TopSEQ
+configs <- fread("data_prep/config_torrent.yaml", header=FALSE) 
+wdir <- configs[V1 == "workdir:", V2]
+
+samplesInfo <- fread("input/samples_info.txt") %>% 
+  .[USE == "E4", ] %>% 
+  .[, replicate := str_extract(ID, "R.$")] %>% 
+  .[, condition := gsub("_R[0-9]", "", ID)]
+samples2do <- samplesInfo$ID
+samples2do_m <- c("Ctr2i", "D0azide", "D2azide", "D4azide", "D8azide")
+
+if(!file.exists(paste0(outdatadir, "diferenciacija_TopData.RDS"))) {
+  #if(!file.exists(paste0(outdatadir, "dCG.RDS"))) {
+  dCG <- readRDS(path_dCG)
+  dCG <- dCG[strand(dCG) == "+"]
+  strand(dCG) <- "*"
+  mcols(dCG)$ID <- gsub("_[+-]_[GC]+", "", mcols(dCG)$cname)
+  mcols(dCG)$cname <- NULL
+  
+  d <- foreach(i=samples2do) %dopar% {
+  return(get_data(i, wdir, outdatadir, dCG))}
+  names(d) <- samples2do 
+  saveRDS(d, paste0(outdatadir, "diferenciacija_TopData.RDS"))
+} 
+
+if(!(file.exists(paste0(outdatadir, "diferenciacija_coverages2useTopData.RDS")))) {
+# coverage table
+  d <- readRDS(paste0(outdatadir, "diferenciacija_TopData.RDS"))
+  coverages <- foreach(i=names(d), .combine="cbind") %do% {
+    d[[i]][[2]] %>% 
+      as.data.table %>% 
+      .[, .(N)] %>%
+      setnames("N", i)
+  } %>% cbind(d[[1]][[2]][, .(chr, start, ID)], .)
+
+  coverages$Ctr2i <- coverages[, samplesInfo[condition == "Ctr2i", NAME], with=FALSE] %>% rowSums
+  coverages$D0azide <- coverages[, samplesInfo[condition == "D0azide", NAME], with=FALSE] %>% rowSums
+  coverages$D2azide <- coverages[, samplesInfo[condition == "D2azide", NAME], with=FALSE] %>% rowSums
+  coverages$D4azide <- coverages[, samplesInfo[condition == "D4azide", NAME], with=FALSE] %>% rowSums
+  coverages$D8azide <- coverages[, samplesInfo[condition == "D8azide", NAME], with=FALSE] %>% rowSums 
+  coverages <- coverages[chr %in% paste0("chr", c(1:19, "X", "Y"))]
+  coveragesOrig <- copy(coverages) 
+  coverages <- coverages[Ctr2i > 0, ':=' (D0azide_R1 = 0, D0azide_R2 = 0, D0azide = 0, 
+                                          D2azide_R1 = 0, D2azide_R2 = 0, D2azide = 0,  
+                                          D4azide_R1 = 0, D4azide_R2 = 0, D4azide = 0,
+                                          D8azide_R1 = 0, D8azide_R2 = 0, D8azide = 0,
+                                          Ctr2i_R1 = 0, Ctr2i_R2 = 0, Ctr2i = 0)]
+  
+saveRDS(coverages, paste0(outdatadir, "diferenciacija_coverages2useTopData.RDS")) 
+  saveRDS(coveragesOrig, paste0(outdatadir, "diferenciacija_coverages2useOrigTopData.RDS")) 
+  } 
+```
+
+```{r}
+# RRBS
+dir_RRBS <- "./input/RRBS_LIF/"
+
+if(!(file.exists(paste0(outdatadir, "differentiations_RRBS.RDS")))) {
+  # Read in RRBS
+  A0D <- import(paste0(dir_RRBS, "A0D_merged.bedGraph"))
+  names(mcols(A0D)) <- c("Met", "C", "T")  
+  mcols(A0D)$ID <- get_id(A0D)
+  
+  A2D <- import(paste0(dir_RRBS, "A2D_merged.bedGraph"))
+  names(mcols(A2D)) <- c("Met", "C", "T")  
+  mcols(A2D)$ID <- get_id(A2D)
+  
+  A4D <- import(paste0(dir_RRBS, "A4D_merged.bedGraph"))
+  names(mcols(A4D)) <- c("Met", "C", "T")
+  mcols(A4D)$ID <- get_id(A4D)
+  
+  A8D <- import(paste0(dir_RRBS, "A8D_merged.bedGraph"))
+  names(mcols(A8D)) <- c("Met", "C", "T")
+  mcols(A8D)$ID <- get_id(A8D)
+  
+  dCG <- readRDS("/mnt/store/annotations/MusMusculus_mm10_Ensembl/CG_data_onC.RDS")
+  seqlevelsStyle(dCG) <- "UCSC"
+  dCG <- dCG[seqnames(dCG) %in% c(paste0("chr", 1:19), "chrX", "chrY")]
+  seqlevels(dCG) <- seqlevelsInUse(dCG)
+  mcols(dCG) <- NULL
+  dCG <- dCG[strand(dCG) == "+"]
+  mcols(dCG)$ID <- paste0(seqnames(dCG), "_", start(dCG))
+  
+  # Make huge table with all data
+  d <- merge(
+     as.data.table(A0D) %>% .[, .(C, T, ID)]  %>% .[, A0D_cov := C + T] %>% .[, A0D_met := C / (C+T)*100] %>% setnames("C", "A0D_C") %>% setnames("T", "A0D_T"), 
+     as.data.table(A2D) %>% .[, .(C, T, ID)]  %>% .[, A2D_cov := C + T] %>% .[, A2D_met := C / (C+T)*100] %>% setnames("C", "A2D_C") %>% setnames("T", "A2D_T"), by="ID", all=TRUE ) %>% 
+     merge(., as.data.table(A4D) %>% .[, .(C, T, ID)]  %>% .[, A4D_cov := C + T] %>% .[, A4D_met := C / (C+T)*100] %>% setnames("C", "A4D_C") %>% setnames("T", "A4D_T"), by="ID", all=TRUE ) %>% 
+     merge(., as.data.table(A8D) %>% .[, .(C, T, ID)]  %>% .[, A8D_cov := C + T] %>% .[, A8D_met := C / (C+T)*100] %>% setnames("C", "A8D_C") %>% setnames("T", "A8D_T"), by="ID", all=TRUE ) %>% 
+     merge(., as.data.table(dCG) %>% .[, .(ID)], all=TRUE, by="ID") %>% 
+     .[!grepl("[M]", ID), ] 
+  setkey(d, "ID") 
+
+  total_cov <- d[, .(ID, A0D_cov, A2D_cov, A4D_cov, A8D_cov)]
+  setkey(total_cov, "ID")
+  methylation <- d[, .(ID, A0D_met, A2D_met, A4D_met, A8D_met)]
+  setkey(methylation, "ID")
+  stopifnot("Cov and met IDs do not match" = all(total_cov$ID == methylation$ID))
+  
+  cov_gr_full <- total_cov %>% 
+    .[, chr := strsplit(ID, "_") %>% sapply(., `[`, 1)] %>% 
+    .[, start := strsplit(ID, "_") %>% sapply(., `[`, 2)] %>% 
+    .[, end := strsplit(ID, "_") %>% sapply(., `[`, 2)] %>% 
+    makeGRangesFromDataFrame(., keep.extra.columns=TRUE)
+  met_gr_full <- methylation %>% 
+    .[, chr := strsplit(ID, "_") %>% sapply(., `[`, 1)] %>% 
+    .[, start := strsplit(ID, "_") %>% sapply(., `[`, 2)] %>% 
+    .[, end := strsplit(ID, "_") %>% sapply(., `[`, 2)] %>% 
+    makeGRangesFromDataFrame(., keep.extra.columns=TRUE)
+  aa_A0 <- total_cov$A0D_cov < 5
+  aa_A0[is.na(aa_A0)] <- TRUE
+  aa_A2 <- total_cov$A2D_cov < 5
+  aa_A2[is.na(aa_A2)] <- TRUE
+  aa_A4 <- total_cov$A4D_cov < 5
+  aa_A4[is.na(aa_A4)] <- TRUE
+  aa_A8 <- total_cov$A8D_cov < 5
+  aa_A8[is.na(aa_A8)] <- TRUE
+  
+  met_gr_threshold <- methylation %>% 
+    as.data.table() %>% 
+    .[aa_A0, A0D_met := NA] %>% 
+    .[aa_A2, A2D_met := NA] %>% 
+    .[aa_A4, A4D_met := NA] %>% 
+    .[aa_A8, A8D_met := NA] %>% 
+    .[, chr := strsplit(ID, "_") %>% sapply(., `[`, 1)] %>% 
+    .[, start := strsplit(ID, "_") %>% sapply(., `[`, 2)] %>% 
+    .[, end := strsplit(ID, "_") %>% sapply(., `[`, 2)] %>% 
+    makeGRangesFromDataFrame(., keep.extra.columns=TRUE)
+
+  saveRDS(list(methylation_full_dt=methylation, 
+               methylation_gr_th=met_gr_threshold, methylation_gr_full=met_gr_full, 
+               raw=d),
+          paste0(outdatadir, "differentiations_RRBS.RDS")) }
+```
+

@@ -1,0 +1,1134 @@
+```{r}
+library(pacman)
+p_load(data.table, dplyr, ggplot2, rtracklayer, RColorBrewer, scales, foreach, doParallel, org.Mm.eg.db,
+viridis, annotatr, stringr, patchwork, GGally, EnrichedHeatmap, circlize, clusterProfiler, ggpmisc, ggpubr)
+options(scipen=999)
+dir.create(outdatadir, recursive=TRUE)
+registerDoParallel(20)
+knitr::opts_chunk$set(fig.width=9, fig.height=5)
+source("code/common.R")
+```
+
+# Correlations {.tabset}
+
+```{r}
+tmp <- readRDS(paste0("output/code/PrepAllData/dAnnotations.RDS"))  
+annotations <- tmp[["anotacijos"]]
+repeatai <- tmp[["repeatai"]]
+
+CGI <- annotations[mcols(annotations)$type ==  "mm10_cpg_islands"]
+CGI_full <- annotations[mcols(annotations)$type == "mm10_cpgUnmsk_UCSC"]
+CGI_repeats <- CGI_full[countOverlaps(CGI_full, annotations[mcols(annotations)$type ==  "mm10_cpg_islands"])== 0]
+
+samples2do_BS <- c("RRBS_homo_met", "RRBS_hetero_met", "WGBS_KO_met", "WGBS_hetero_met", "WGBS_homo_met", "WGBS_WT_met")
+samples2do_TOP <- c("WT", "Het", "Hom") 
+coveragesOrig <- readRDS("./output/code/PrepAllData/mutantai_coverages2useTopData.RDS")
+coveragesOrig_gr <- coveragesOrig %>% 
+  .[, end := start] %>% 
+  .[, c("chr", "start", "end", samples2do_TOP), with=FALSE] %>% 
+  .[chr %in% paste0("chr", c(1:19, "X", "Y"))] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+coverages <- coveragesOrig %>% 
+  .[WT>0, WT := 1] %>% 
+  .[Het>0, Het := 1] %>% 
+  .[Hom>0, Hom := 1] %>% 
+  .[, end := start] %>% 
+  .[, c("chr", "start", "end", samples2do_TOP), with=FALSE] %>% 
+  .[chr %in% paste0("chr", c(1:19, "X", "Y"))] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+tmp <- readRDS(paste0("output/code/PrepAllData//WGBS_vs_RRBS_data.RDS"))
+met_gr <- tmp[["methylation_gr_th"]]
+met_gr <- met_gr[seqnames(met_gr) %in% paste0("chr", c(1:19, "X", "Y"))]
+
+rm(tmp)
+gc()  
+```
+
+Using bins: genome is divided into bins and then correlation is calculated/scatterplot plotted. 
+
+```{r}
+bin_size <- 2000
+Dnmt_bins <- coverages %>% 
+  as.data.table() %>% 
+  .[, bin_ID := paste0(seqnames, "_", ceiling(start/bin_size), "_", ceiling(start/bin_size) + 1)] %>% 
+  .[, .(bin_ID, WT, Het, Hom, width)] %>% 
+  .[, lapply(.SD, sum), by="bin_ID"] %>% 
+  .[, WT := WT/width] %>% 
+  .[, Het := Het/width] %>% 
+  .[, Hom := Hom/width] 
+
+Dnmt_binsCOV <- coveragesOrig_gr %>% 
+  as.data.table() %>% 
+  .[, bin_ID := paste0(seqnames, "_", ceiling(start/bin_size), "_", ceiling(start/bin_size) + 1)] %>% 
+  .[, .(bin_ID, WT, Het, Hom, width)] %>% 
+  .[, lapply(.SD, sum), by="bin_ID"] %>% 
+  .[, WT := WT/width] %>% 
+  .[, Het := Het/width] %>% 
+  .[, Hom := Hom/width] 
+
+met_bins <- met_gr %>% 
+  as.data.table() %>% 
+  .[, bin_ID := paste0(seqnames, "_", ceiling(start/bin_size), "_", ceiling(start/bin_size) + 1)] %>% 
+  .[, .(bin_ID, RRBS_homo_met, RRBS_hetero_met, WGBS_KO_met, WGBS_WT_met, WGBS_hetero_met, WGBS_homo_met)] %>% 
+  .[, lapply(.SD, mean, na.rm=TRUE), by="bin_ID"] 
+
+d <- merge(Dnmt_bins, met_bins, by="bin_ID", all=TRUE) %>% as.data.table()
+dd <- d[width >9, ]
+
+dcov <- merge(Dnmt_binsCOV, met_bins, by="bin_ID", all=TRUE) %>% as.data.table()
+ddcov <- dcov[width >9, ]
+
+d_gr <- d %>% 
+  .[, seqnames := strsplit(bin_ID, "_") %>% sapply(., `[`, 1)] %>% 
+  .[, start := (strsplit(bin_ID, "_") %>% sapply(., `[`, 2) %>% as.numeric()) * bin_size + 1 ] %>% 
+  .[, end := (strsplit(bin_ID, "_") %>% sapply(., `[`, 3) %>% as.numeric()) * bin_size] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+d_gr_th <- dd %>% 
+  .[, seqnames := strsplit(bin_ID, "_") %>% sapply(., `[`, 1)] %>% 
+  .[, start := (strsplit(bin_ID, "_") %>% sapply(., `[`, 2) %>% as.numeric()) * bin_size + 1 ] %>% 
+  .[, end := (strsplit(bin_ID, "_") %>% sapply(., `[`, 3) %>% as.numeric()) * bin_size] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)  
+
+dcov_gr <- dcov %>% 
+  .[, seqnames := strsplit(bin_ID, "_") %>% sapply(., `[`, 1)] %>% 
+  .[, start := (strsplit(bin_ID, "_") %>% sapply(., `[`, 2) %>% as.numeric()) * bin_size + 1 ] %>% 
+  .[, end := (strsplit(bin_ID, "_") %>% sapply(., `[`, 3) %>% as.numeric()) * bin_size] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+dcov_gr_th <- ddcov %>% 
+  .[, seqnames := strsplit(bin_ID, "_") %>% sapply(., `[`, 1)] %>% 
+  .[, start := (strsplit(bin_ID, "_") %>% sapply(., `[`, 2) %>% as.numeric()) * bin_size + 1 ] %>% 
+  .[, end := (strsplit(bin_ID, "_") %>% sapply(., `[`, 3) %>% as.numeric()) * bin_size] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)    
+
+
+# creating bins from overlapping CGs 
+coverages <- sort(coverages)
+met_gr <- sort(met_gr)
+met_gr <- resize(met_gr, 1)
+coveragesOrig_gr <- sort(coveragesOrig_gr)
+
+
+wt_bins_overlap_TopSeq <- coveragesOrig_gr[mcols(coveragesOrig_gr)$WT > 0, ] %>% 
+   as.data.table() %>% 
+  .[, bin_ID := paste0(seqnames, "_", ceiling(start/bin_size), "_", ceiling(start/bin_size) + 1)] %>% 
+  .[, .(bin_ID, WT, width)] %>% 
+  .[, lapply(.SD, sum), by="bin_ID"] %>% 
+  .[, WT := WT/width] 
+wt_bins_overlap_BS <- met_gr[mcols(coveragesOrig_gr)$WT > 0,] %>% as.data.table() %>% 
+  .[, bin_ID := paste0(seqnames, "_", ceiling(start/bin_size), "_", ceiling(start/bin_size) + 1)] %>% 
+   .[, .(bin_ID, WGBS_WT_met)] %>% 
+  .[, lapply(.SD, mean, na.rm=TRUE), by="bin_ID"] 
+
+het_bins_overlap_TopSeq <- coveragesOrig_gr[mcols(coveragesOrig_gr)$Het > 0, ] %>% 
+   as.data.table() %>% 
+  .[, bin_ID := paste0(seqnames, "_", ceiling(start/bin_size), "_", ceiling(start/bin_size) + 1)] %>% 
+  .[, .(bin_ID, Het, width)] %>% 
+  .[, lapply(.SD, sum), by="bin_ID"] %>% 
+  .[, Het := Het/width] 
+het_bins_overlap_BS <- met_gr[mcols(coveragesOrig_gr)$Het > 0,] %>% as.data.table() %>% 
+  .[, bin_ID := paste0(seqnames, "_", ceiling(start/bin_size), "_", ceiling(start/bin_size) + 1)] %>% 
+   .[, .(bin_ID, WGBS_hetero_met, RRBS_hetero_met)] %>% 
+  .[, lapply(.SD, mean, na.rm=TRUE), by="bin_ID"] 
+
+homo_bins_overlap_TopSeq <- coveragesOrig_gr[mcols(coveragesOrig_gr)$Hom > 0, ] %>% 
+   as.data.table() %>% 
+  .[, bin_ID := paste0(seqnames, "_", ceiling(start/bin_size), "_", ceiling(start/bin_size) + 1)] %>% 
+  .[, .(bin_ID, Hom, width)] %>% 
+  .[, lapply(.SD, sum), by="bin_ID"] %>% 
+  .[, Hom := Hom/width] 
+homo_bins_overlap_BS <- met_gr[mcols(coveragesOrig_gr)$Hom > 0,] %>% as.data.table() %>% 
+  .[, bin_ID := paste0(seqnames, "_", ceiling(start/bin_size), "_", ceiling(start/bin_size) + 1)] %>% 
+   .[, .(bin_ID, WGBS_homo_met, RRBS_homo_met)] %>% 
+  .[, lapply(.SD, mean, na.rm=TRUE), by="bin_ID"] 
+
+
+
+add_group <- function(x) {
+  x %>% 
+    as.data.table() %>% 
+    setnames(., "samplas") %>% 
+    .[, group := "KITA"] %>% 
+    .[samplas == 0, group := "0"] %>% 
+    .[samplas > 0, group := "(0-0.1]"] %>% 
+    .[samplas > 0.1, group := "(0.1-0.2]"] %>% 
+    .[samplas > 0.2, group := "(0.2-0.3]"] %>% 
+    .[samplas > 0.3, group := "(0.3-0.4]"] %>% 
+    .[samplas > 0.4, group := "(0.4-0.5]"] %>% 
+    .[samplas > 0.5, group := "(0.5-0.6]"] %>% 
+    .[samplas > 0.6, group := "(0.6-0.7]"] %>% 
+    .[samplas > 0.7, group := "(0.7-0.8]"] %>% 
+    .[samplas > 0.8, group := "(0.8-0.9]"] %>% 
+    .[samplas > 0.9, group := "(0.9-1]"] %>% 
+    .[, group]
+}
+
+plot_groups <- function(x, bin, grupes, xas, yas, namas) {
+  p <-  cbind(x, bin, grupes) %>% 
+    as.data.table() %>%  
+    setnames(., c("WGBS", "bin_ID", "TOP")) %>% 
+    #.[grepl("chr1_", bin_ID), ] %>%   
+    .[TOP != "KITA", ] %>% 
+    .[, TOP := factor(TOP, levels=c("0", "(0-0.1]", "(0.1-0.2]", "(0.2-0.3]", "(0.3-0.4]", "(0.4-0.5]", "(0.5-0.6]", "(0.6-0.7]", "(0.7-0.8]", "(0.8-0.9]", "(0.9-1]"))] %>% 
+    .[, WGBS := as.numeric(WGBS)] %>% 
+    ggplot(aes(TOP, WGBS)) +
+      geom_violin() +
+      geom_boxplot(width=0.1, outlier.shape=NA) +
+      xlab(xas) +
+      ylab(yas) +
+      ggtitle(namas) +
+      theme_bw() +
+      theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) 
+  return(p)   
+}
+
+make_dens <- function(x, y, xlab, ylab, titlas, adjustas) {
+  cbind(x, y) %>% 
+    as.data.table() %>% 
+    setnames(., c("x", "y")) %>% 
+    ggplot(aes(x, y)) +
+      stat_density_2d(aes(fill = after_stat(density)), geom = "raster", contour = FALSE, adjust = adjustas) +
+      scale_fill_distiller(palette= "RdYlBu", direction=-1) +
+      scale_x_continuous(expand = c(0, 0)) + 
+      scale_y_continuous(expand = c(0, 0)) + 
+      theme_bw() +
+      ylab(ylab) +
+      xlab(xlab) +
+       #stat_poly_eq(use_label(c("adj.R2", "p"))) +
+      stat_cor(method="pearson") +
+      ggtitle(titlas) +
+      theme(legend.position="bottom", 
+            legend.key.width = unit(1, 'cm')
+           )  
+}    
+
+make_dens_list <- function(duom, adjustas=10) {
+  p1 <- make_dens(duom$Hom[!(is.na(duom$Hom) | is.na(duom$WGBS_homo_met))], duom$WGBS_homo_met[!(is.na(duom$Hom) | is.na(duom$WGBS_homo_met))], "TopSeq", "WGBS", "Homo WGBS", adjustas)
+  p2 <- make_dens(duom$Het[!(is.na(duom$Het) | is.na(duom$WGBS_hetero_met))], duom$WGBS_hetero_met[!(is.na(duom$Het) | is.na(duom$WGBS_hetero_met))], "TopSeq", "WGBS", "Hetero WGBS", adjustas)
+  p4 <- make_dens(duom$Hom[!(is.na(duom$Hom) | is.na(duom$RRBS_homo_met))], duom$RRBS_homo_met[!(is.na(duom$Hom) | is.na(duom$RRBS_homo_met))], "TopSeq", "WGBS", "Homo RRBS", adjustas)
+  p5 <- make_dens(duom$Het[!(is.na(duom$Het) | is.na(duom$RRBS_hetero_met))], duom$RRBS_hetero_met[!(is.na(duom$Het) | is.na(duom$RRBS_hetero_met))], "TopSeq", "WGBS", "Hetero RRBS", adjustas)
+
+  p3 <- cbind(duom$WT[!(is.na(duom$WT) | is.na(duom$WGBS_WT_met))], duom$WGBS_WT_met[!(is.na(duom$Het) | is.na(duom$WGBS_WT_met))]) %>% 
+    as.data.table() %>% 
+    setnames(., c("x", "y")) %>% 
+    ggplot(aes(x, y)) +
+      geom_point(size=0.1) +
+      theme_bw() +
+      ylab("WGBS") +
+      xlab("TopSeq") +
+      ggtitle("WT WGBS") +
+      theme(legend.position="bottom", 
+            legend.key.width = unit(1, 'cm')
+           )  
+  
+  p <- p1 | p2 | p3 | p4 | p5 
+  return(p)
+}
+
+make_scat_list <- function(duom) {
+  p1 <- cbind(duom$Hom[!(is.na(duom$Hom) | is.na(duom$WGBS_homo_met))], duom$WGBS_homo_met[!(is.na(duom$Hom) | is.na(duom$WGBS_homo_met))]) %>% 
+    as.data.table() %>% 
+    setnames(., c("x", "y")) %>% 
+    ggplot(aes(x, y)) +
+      geom_point(size=0.1) +
+      theme_bw() +
+      ylab("WGBS") +
+      xlab("TopSeq") +
+      ggtitle("Homo WGBS") +
+      theme(legend.position="bottom", 
+            legend.key.width = unit(1, 'cm')
+           ) 
+
+  p2 <- cbind(duom$Het[!(is.na(duom$Het) | is.na(duom$WGBS_hetero_met))], duom$WGBS_hetero_met[!(is.na(duom$Het) | is.na(duom$WGBS_hetero_met))]) %>% 
+    as.data.table() %>% 
+    setnames(., c("x", "y")) %>% 
+    ggplot(aes(x, y)) +
+      geom_point(size=0.1) +
+      theme_bw() +
+      ylab("WGBS") +
+      xlab("TopSeq") +
+      ggtitle("Hetero WGBS") +
+      theme(legend.position="bottom", 
+            legend.key.width = unit(1, 'cm')
+           ) 
+
+  p3 <- cbind(duom$WT[!(is.na(duom$WT) | is.na(duom$WGBS_WT_met))], duom$WGBS_WT_met[!(is.na(duom$Het) | is.na(duom$WGBS_WT_met))]) %>% 
+    as.data.table() %>% 
+    setnames(., c("x", "y")) %>% 
+    ggplot(aes(x, y)) +
+      geom_point(size=0.1) +
+      theme_bw() +
+      ylab("WGBS") +
+      xlab("TopSeq") +
+      ggtitle("WT WGBS") +
+      theme(legend.position="bottom", 
+            legend.key.width = unit(1, 'cm')
+           )  
+  
+  p4 <- cbind(duom$Hom[!(is.na(duom$Hom) | is.na(duom$RRBS_homo_met))], duom$RRBS_homo_met[!(is.na(duom$Hom) | is.na(duom$RRBS_homo_met))]) %>% 
+    as.data.table() %>% 
+    setnames(., c("x", "y")) %>% 
+    ggplot(aes(x, y)) +
+      geom_point(size=0.1) +
+      theme_bw() +
+      ylab("WGBS") +
+      xlab("TopSeq") +
+      ggtitle("Homo RRBS") +
+      theme(legend.position="bottom", 
+            legend.key.width = unit(1, 'cm')
+           )  
+  
+  p5 <- cbind(duom$Het[!(is.na(duom$Het) | is.na(duom$RRBS_hetero_met))], duom$RRBS_hetero_met[!(is.na(duom$Het) | is.na(duom$RRBS_hetero_met))]) %>% 
+    as.data.table() %>% 
+    setnames(., c("x", "y")) %>% 
+    ggplot(aes(x, y)) +
+      geom_point(size=0.1) +
+      theme_bw() +
+      ylab("WGBS") +
+      xlab("TopSeq") +
+      ggtitle("Hetero RRBS") +
+      theme(legend.position="bottom", 
+            legend.key.width = unit(1, 'cm')
+           )  
+  
+  p <- p1 | p2 | p3 | p4 | p5 
+  return(p)
+}
+
+do_cor_elem <- function(data, elem, titlas, metodas="pearson") {
+  #data <- d_gr
+  #elem <- CGI
+  dd <- data[countOverlaps(data, elem) > 0]    
+  data.table(
+    WGBS_homo=cor(dd$Hom[!(is.na(dd$Hom) | is.na(dd$WGBS_homo_met))], dd$WGBS_homo_met[!(is.na(dd$Hom) | is.na(dd$WGBS_homo_met))], method=metodas),
+    WGBS_hetero=cor(dd$Het[!(is.na(dd$Het) | is.na(dd$WGBS_hetero_met))], dd$WGBS_hetero_met[!(is.na(dd$Het) | is.na(dd$WGBS_hetero_met))], method=metodas),
+    WGBS_WT=cor(dd$WT[!(is.na(dd$WT) | is.na(dd$WGBS_WT_met))], dd$WGBS_WT_met[!(is.na(dd$WT) | is.na(dd$WGBS_WT_met))], method=metodas),
+    RRBS_homo=cor(dd$Hom[!(is.na(dd$Hom) | is.na(dd$RRBS_homo_met))], dd$RRBS_homo_met[!(is.na(dd$Hom) | is.na(dd$RRBS_homo_met))], method=metodas),
+    RRBS_hetero=cor(dd$Het[!(is.na(dd$Het) | is.na(dd$RRBS_hetero_met))], dd$RRBS_hetero_met[!(is.na(dd$Het) | is.na(dd$RRBS_hetero_met))], method=metodas)) %>% 
+  t() %>% 
+  as.data.table(., keep.rownames=TRUE) %>% 
+  ggplot(aes(rn, V1)) +
+    geom_col() +
+    theme_bw() +
+    ylab(metodas) +
+    theme(axis.title.x=element_blank()) +
+    ggtitle(titlas) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+}
+
+do_bins_violin <- function(tmp) {
+  p1 <- plot_groups(tmp$WGBS_WT_met, tmp$bin_ID, add_group(tmp$WT), "TOP WT", "WGBS WT", "WT")
+  p2 <- plot_groups(tmp$WGBS_hetero_met, tmp$bin_ID, add_group(tmp$Het), "TOP hetero", "WGBS hetero", "hetero")
+  p3 <- plot_groups(tmp$WGBS_homo_met, tmp$bin_ID, add_group(tmp$Hom), "TOP homo", "WGBS homo", "homo")
+  p4 <- plot_groups(tmp$RRBS_hetero_met, tmp$bin_ID, add_group(tmp$Het), "TOP hetero", "RRBS hetero", "hetero")
+  p5 <- plot_groups(tmp$RRBS_homo_met, tmp$bin_ID, add_group(tmp$Hom), "TOP homo", "RRBS homo", "homo")
+
+  p <- (p3 | p2 | p1 | p5 | p4)
+  return(p)
+}
+```
+
+## AllCGperBin {.tabset}
+
+Data from different methods is compared here. 
+
+### Any bins
+
+```{r, fig.width=12}
+make_dens_list(d) 
+make_scat_list(d)
+do_bins_violin(d)
+```
+
+
+### At least 10 CG per bin
+
+```{r, fig.width=12}
+make_dens_list(dd)
+make_scat_list(dd)
+do_bins_violin(dd)
+```
+
+
+### Any bins on CGI
+
+```{r, fig.width=12}
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_cpg_islands"])>0]) %>% as.data.table())
+make_dens_list(tmp, adjustas=5)
+make_scat_list(tmp) 
+do_bins_violin(tmp)
+```
+
+
+### Any bins on EPD promoter
+
+```{r, fig.width=12}
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_EPDpromoters"])>0]) %>% as.data.table())
+make_dens_list(tmp, adjustas=5)
+make_scat_list(tmp) 
+do_bins_violin(tmp)
+```
+
+### Any bins on Protein coding gene
+
+```{r, fig.width=12}
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_proteinCoding"])>0]) %>% as.data.table())
+make_dens_list(tmp)
+make_scat_list(tmp) 
+do_bins_violin(tmp)
+```
+
+
+### Any bins on fantom enhancers
+```{r, fig.width=12}
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_enhancers_fantom"])>0]) %>% as.data.table())
+make_dens_list(tmp, adjustas=5)
+make_scat_list(tmp) 
+do_bins_violin(tmp)
+```
+
+### At least 10 CG bins on CGI
+
+```{r, fig.width=12}
+tmp <- (elementMetadata(d_gr_th[countOverlaps(d_gr_th, annotations[mcols(annotations)$type == "mm10_cpg_islands"])>0]) %>% as.data.table())
+make_dens_list(tmp, adjustas=5)
+make_scat_list(tmp) 
+do_bins_violin(tmp)
+```
+
+### At least 10 CG bins on EPD promoter
+
+```{r, fig.width=12}
+tmp <- (elementMetadata(d_gr_th[countOverlaps(d_gr_th, annotations[mcols(annotations)$type == "mm10_EPDpromoters"])>0]) %>% as.data.table())
+make_dens_list(tmp, adjustas=5)
+make_scat_list(tmp) 
+do_bins_violin(tmp)
+```
+
+### At least 10 CG bins on Protein coding gene
+
+```{r, fig.width=12}
+tmp <- (elementMetadata(d_gr_th[countOverlaps(d_gr_th, annotations[mcols(annotations)$type == "mm10_proteinCoding"])>0]) %>% as.data.table())
+make_dens_list(tmp)
+make_scat_list(tmp) 
+do_bins_violin(tmp)
+```
+
+### At least 10 CG bins on fantom enhancers
+```{r, fig.width=12}
+tmp <- (elementMetadata(d_gr_th[countOverlaps(d_gr_th, annotations[mcols(annotations)$type == "mm10_enhancers_fantom"])>0]) %>% as.data.table())
+make_dens_list(tmp, adjustas=5)
+make_scat_list(tmp) 
+do_bins_violin(tmp)
+```
+
+
+## Overlapping CpG {.tabset}
+
+Using only those CpG that were identified by both methods (WGBS/RRBS data that did not overlap TopSeq was converted to NA).
+
+Normalization performed using genomic CG. 
+
+```{r}
+bin_size <- 2000
+mcols(coverages)$ID <- paste0(seqnames(coverages), "_", start(coverages), "_", end(coverages)+1)
+coverages <- sort(coverages) 
+met_gr <- sort(met_gr)
+stopifnot(all(mcols(met_gr)$ID == mcols(coverages)$ID))
+
+mcols(met_gr)$WGBS_WT_met[mcols(coverages)$WT == 0] <- NA
+mcols(met_gr)$WGBS_hetero_met[mcols(coverages)$Het == 0] <- NA
+mcols(met_gr)$WGBS_homo_met[mcols(coverages)$Hom == 0] <- NA
+mcols(met_gr)$RRBS_hetero_met[mcols(coverages)$Het == 0] <- NA
+mcols(met_gr)$RRBS_homo_met[mcols(coverages)$Hom == 0] <- NA
+
+Dnmt_bins <- coverages %>% 
+  as.data.table() %>% 
+  .[, bin_ID := paste0(seqnames, "_", ceiling(start/bin_size), "_", ceiling(start/bin_size) + 1)] %>% 
+  .[, .(bin_ID, WT, Het, Hom, width)] %>% 
+  .[, lapply(.SD, sum), by="bin_ID"] %>% 
+  .[, WT := WT/width] %>% 
+  .[, Het := Het/width] %>% 
+  .[, Hom := Hom/width] 
+
+met_bins <- met_gr %>% 
+  as.data.table() %>% 
+  .[, bin_ID := paste0(seqnames, "_", ceiling(start/bin_size), "_", ceiling(start/bin_size) + 1)] %>% 
+  .[, .(bin_ID, RRBS_homo_met, RRBS_hetero_met, WGBS_KO_met, WGBS_WT_met, WGBS_hetero_met, WGBS_homo_met)] %>% 
+  .[, lapply(.SD, mean, na.rm=TRUE), by="bin_ID"] 
+
+d <- merge(Dnmt_bins, met_bins, by="bin_ID", all=TRUE) %>% as.data.table()
+dd <- d[width >9, ]
+
+d_gr <- d %>% 
+  .[, seqnames := strsplit(bin_ID, "_") %>% sapply(., `[`, 1)] %>% 
+  .[, start := (strsplit(bin_ID, "_") %>% sapply(., `[`, 2) %>% as.numeric()) * bin_size + 1 ] %>% 
+  .[, end := (strsplit(bin_ID, "_") %>% sapply(., `[`, 3) %>% as.numeric()) * bin_size] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+d_gr_th <- dd %>% 
+  .[, seqnames := strsplit(bin_ID, "_") %>% sapply(., `[`, 1)] %>% 
+  .[, start := (strsplit(bin_ID, "_") %>% sapply(., `[`, 2) %>% as.numeric()) * bin_size + 1 ] %>% 
+  .[, end := (strsplit(bin_ID, "_") %>% sapply(., `[`, 3) %>% as.numeric()) * bin_size] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)  
+```
+
+### Any bins
+
+```{r, fig.width=12}
+make_dens_list(d) 
+make_scat_list(d)
+do_bins_violin(d)
+```
+
+
+### At least 10 CG per bin
+
+```{r, fig.width=12}
+make_dens_list(dd)
+make_scat_list(dd)
+do_bins_violin(dd)
+```
+
+
+### Any bins on CGI
+
+```{r, fig.width=12}
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_cpg_islands"])>0]) %>% as.data.table())
+make_dens_list(tmp, adjustas=5)
+make_scat_list(tmp) 
+do_bins_violin(tmp)
+```
+
+
+### Any bins on EPD promoter
+
+```{r, fig.width=12}
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_EPDpromoters"])>0]) %>% as.data.table())
+make_dens_list(tmp, adjustas=5)
+make_scat_list(tmp) 
+do_bins_violin(tmp)
+```
+
+### Any bins on Protein coding gene
+
+```{r, fig.width=12}
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_proteinCoding"])>0]) %>% as.data.table())
+make_dens_list(tmp)
+make_scat_list(tmp) 
+do_bins_violin(tmp)
+```
+
+
+### Any bins on fantom enhancers
+```{r, fig.width=12}
+tmp <- (elementMetadata(d_gr[countOverlaps(d_gr, annotations[mcols(annotations)$type == "mm10_enhancers_fantom"])>0]) %>% as.data.table())
+make_dens_list(tmp, adjustas=5)
+make_scat_list(tmp) 
+do_bins_violin(tmp)
+```
+
+### At least 10 CG bins on CGI
+
+```{r, fig.width=12}
+tmp <- (elementMetadata(d_gr_th[countOverlaps(d_gr_th, annotations[mcols(annotations)$type == "mm10_cpg_islands"])>0]) %>% as.data.table())
+make_dens_list(tmp, adjustas=5)
+make_scat_list(tmp) 
+do_bins_violin(tmp)
+```
+
+### At least 10 CG bins on EPD promoter
+
+```{r, fig.width=12}
+tmp <- (elementMetadata(d_gr_th[countOverlaps(d_gr_th, annotations[mcols(annotations)$type == "mm10_EPDpromoters"])>0]) %>% as.data.table())
+make_dens_list(tmp, adjustas=5)
+make_scat_list(tmp) 
+do_bins_violin(tmp)
+```
+
+### At least 10 CG bins on Protein coding gene
+
+```{r, fig.width=12}
+tmp <- (elementMetadata(d_gr_th[countOverlaps(d_gr_th, annotations[mcols(annotations)$type == "mm10_proteinCoding"])>0]) %>% as.data.table())
+make_dens_list(tmp)
+make_scat_list(tmp) 
+do_bins_violin(tmp)
+```
+
+### At least 10 CG bins on fantom enhancers
+```{r, fig.width=12}
+tmp <- (elementMetadata(d_gr_th[countOverlaps(d_gr_th, annotations[mcols(annotations)$type == "mm10_enhancers_fantom"])>0]) %>% as.data.table())
+make_dens_list(tmp, adjustas=5)
+make_scat_list(tmp) 
+do_bins_violin(tmp)
+```
+
+## On elements 
+
+Correlation between *biological replicates* on various genomic elements. Using only TopSeq data. 
+
+Correlation calculated using pearson. For each element signal (elements) bigger than 0.999 percentile were removed from the analysis (we can call these outliers).  
+
+```{r}
+# CGI intergenic, CGI intragenic, CGI upstream, gene, promoter 
+top_reps <- c("Het_R1", "Het_R2", "Het_R3", "Hom_R1", "Hom_R2", "Hom_R3", "WT_R1", "WT_R2", "WT_R3")
+coverages_reps <- coveragesOrig %>% 
+  .[WT_R1>0, WT_R1 := 1] %>% 
+  .[WT_R2>0, WT_R2 := 1] %>% 
+  .[WT_R3>0, WT_R3 := 1] %>% 
+  .[Het_R2>0, Het_R2 := 1] %>% 
+  .[Het_R3>0, Het_R3 := 1] %>% 
+  .[Het_R4>0, Het_R4 := 1] %>% 
+  .[, Het_R1 := Het_R4] %>% 
+  .[Hom_R1>0, Hom_R1 := 1] %>% 
+  .[Hom_R2>0, Hom_R2 := 1] %>% 
+  .[Hom_R3>0, Hom_R3 := 1] %>% 
+  .[, end := start] %>% 
+  .[, c("chr", "start", "end", top_reps), with=FALSE] %>% 
+  .[chr %in% paste0("chr", c(1:19, "X", "Y"))] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+doCorElem <- function(covai, elem) {
+  #covai <- coverages_reps 
+  #elem <- element 
+  fo <- findOverlaps(covai, elem)
+  gr <- covai[queryHits(fo)]  
+  mcols(gr)$ID  <- mcols(elem[subjectHits(fo)])$id
+  dt <- gr %>% 
+    as.data.table() %>% 
+    .[, nCG := 1] %>% 
+    .[, c("ID", top_reps, "nCG"), with=FALSE ] %>% 
+    .[, lapply(.SD, sum), by="ID"] %>% 
+    .[, Het_R1 := Het_R1/nCG] %>% 
+    .[, Het_R2 := Het_R2/nCG] %>% 
+    .[, Het_R3 := Het_R3/nCG] %>% 
+    .[, Hom_R1 := Hom_R1/nCG] %>% 
+    .[, Hom_R2 := Hom_R2/nCG] %>% 
+    .[, Hom_R3 := Hom_R3/nCG] %>% 
+    .[, WT_R1 := WT_R1/nCG] %>% 
+    .[, WT_R2 := WT_R2/nCG] %>% 
+    .[, WT_R3 := WT_R3/nCG] %>% 
+    .[Het_R1 >= quantile(Het_R1, 0.999), Het_R1 := NA] %>% 
+    .[Het_R2 >= quantile(Het_R2, 0.999), Het_R2 := NA] %>% 
+    .[Het_R3 >= quantile(Het_R3, 0.999), Het_R3 := NA] %>% 
+    .[Hom_R1 >= quantile(Hom_R1, 0.999), Hom_R1 := NA] %>% 
+    .[Hom_R2 >= quantile(Hom_R2, 0.999), Hom_R2 := NA] %>% 
+    .[Hom_R3 >= quantile(Hom_R3, 0.999), Hom_R3 := NA] %>% 
+    .[WT_R1 >= quantile(WT_R1, 0.999), WT_R1 := NA] %>% 
+    .[WT_R2 >= quantile(WT_R2, 0.999), WT_R2 := NA] %>% 
+    .[WT_R3 >= quantile(WT_R3, 0.999), WT_R3 := NA] 
+    
+  cor_het <- c(cor(dt$Het_R1, dt$Het_R2, use="complete.obs"), 
+               cor(dt$Het_R1, dt$Het_R3, use="complete.obs"), 
+               cor(dt$Het_R2, dt$Het_R3, use="complete.obs"))
+
+  cor_hom <- c(cor(dt$Hom_R1, dt$Hom_R2, use="complete.obs"), 
+               cor(dt$Hom_R1, dt$Hom_R3, use="complete.obs"), 
+               cor(dt$Hom_R2, dt$Hom_R3, use="complete.obs"))
+
+  cor_wt <- c(cor(dt$WT_R1, dt$WT_R2, use="complete.obs"), 
+              cor(dt$WT_R1, dt$WT_R3, use="complete.obs"), 
+              cor(dt$WT_R2, dt$WT_R3, use="complete.obs"))
+  return(data.table(rbind(cor_het, cor_hom, cor_wt), sample=c("Het", "Hom", "WT")))
+}
+
+promoters <- doCorElem(coverages_reps, annotations[mcols(annotations)$type == "mm10_EPDpromoters"]) %>% as.data.table() %>% .[, element := "promoter"]
+proteinCoding <- doCorElem(coverages_reps, annotations[mcols(annotations)$type == "mm10_proteinCoding"]) %>% as.data.table() %>% .[, element := "proteinCoding"]
+lncRNA <- doCorElem(coverages_reps, annotations[mcols(annotations)$type == "mm10_lncrna_gencode"]) %>% as.data.table() %>% .[, element := "lncRNA"]
+CGI <- doCorElem(coverages_reps, annotations[mcols(annotations)$type == "mm10_cpg_islands"]) %>% as.data.table() %>% .[, element := "CGI"]
+shores <- doCorElem(coverages_reps, annotations[mcols(annotations)$type == "mm10_cpg_shores"]) %>% as.data.table() %>% .[, element := "CGI shores"]
+shelves <- doCorElem(coverages_reps, annotations[mcols(annotations)$type == "mm10_cpg_shelves"]) %>% as.data.table() %>% .[, element := "CGI shelves"]
+CGI_genic <- doCorElem(coverages_reps, annotations[mcols(annotations)$type == "mm10_cpg_islands"][countOverlaps(annotations[mcols (annotations)$type == "mm10_cpg_islands"], annotations[mcols(annotations)$type == "mm10_proteinCoding"])>0]) %>% as.data.table() %>% .[, element := "CGI genic"]
+CGI_interGenic <- doCorElem(coverages_reps, annotations[mcols(annotations)$type == "mm10_cpg_islands"][countOverlaps(annotations[mcols(annotations)$type == "mm10_cpg_islands"], annotations[mcols(annotations)$type == "mm10_proteinCoding"])==0]) %>% as.data.table() %>% .[, element := "CGI intergenic"]
+
+d <- rbind(promoters, proteinCoding, lncRNA, CGI, shores, shelves, CGI_genic, CGI_interGenic) %>%  
+  as.data.table() %>% 
+  .[, meanas := (V1 + V2 + V3) / 3]  
+d$sd <- apply(d[, 1:3], 1, sd) 
+
+saveRDS(d, paste0(outdatadir, "data_CorOnElements.RDS"))
+
+ggplot(d, aes(element, meanas, fill=sample)) +
+  geom_col(position="dodge") +
+  theme_bw() +
+  ylab("Pearson cor. mean") +
+  scale_fill_manual(values=cols_samples, name="sample") +
+  geom_errorbar(aes(ymin=meanas-sd/2, ymax=meanas+sd/2), width=.2,
+                 position=position_dodge(.9), colour="grey") +
+  theme(legend.position="bottom") 
+
+```
+
+## Coverage I 
+
+Using bins here and all CGs per bin. Basically, average WGBS per bin versus cov. sum per bin. 
+
+Bins were TopSeq coverage was bigger than 10 were transformed to have coverage of 10 (avoiding outliers).
+
+ALSO, X and Y axis are MIXED: X is bisulfite (divided by 100 to get values between 0-1) and y is TOP. 
+
+```{r}
+do_bins_violin_inv <- function(tmp) {
+  p1 <- plot_groups(tmp$WT, tmp$bin_ID, add_group(tmp$WGBS_WT_met/100), "WGBS WT", "TOP WT", "WT") 
+  p2 <- plot_groups(tmp$Het, tmp$bin_ID, add_group(tmp$WGBS_hetero_met/100), "WGBS hetero", "TOP hetero", "hetero")
+  p3 <- plot_groups(tmp$Hom, tmp$bin_ID, add_group(tmp$WGBS_homo_met/100), "WGBS homo", "TOP homo", "homo")
+  p4 <- plot_groups(tmp$Het, tmp$bin_ID, add_group(tmp$RRBS_hetero_met/100), "RRBS hetero", "TOP hetero", "hetero")
+  p5 <- plot_groups(tmp$Hom, tmp$bin_ID, add_group(tmp$RRBS_homo_met/100), "RRBS homo", "TOP homo", "homo")
+
+  p <- (p1 | p2 | p3 | p4 | p5)
+  return(p)
+}
+
+```
+
+
+### Any bins
+
+```{r, fig.width=12}
+dxcov <- copy(dcov) 
+
+dxcov$WT[dxcov$WT > 10] <- 10
+dxcov$Het[dxcov$Het > 10] <- 10
+dxcov$Hom[dxcov$Hom > 10] <- 10
+make_dens_list(dxcov) 
+make_scat_list(dxcov)
+do_bins_violin_inv(dxcov)
+```
+
+
+### At least 10 CG per bin
+
+```{r, fig.width=12}
+dxcov <- copy(ddcov) 
+dxcov$WT[dxcov$WT > 10] <- 10
+dxcov$Het[dxcov$Het > 10] <- 10
+dxcov$Hom[dxcov$Hom > 10] <- 10
+make_dens_list(dxcov) 
+make_scat_list(dxcov)
+do_bins_violin_inv(dxcov)
+```
+
+
+### Any bins on CGI
+
+```{r, fig.width=12}
+tmp <- (elementMetadata(dcov_gr[countOverlaps(dcov_gr, annotations[mcols(annotations)$type == "mm10_cpg_islands"])>0]) %>% as.data.table())
+tmp$WT[tmp$WT > 10] <- 10
+tmp$Het[tmp$Het > 10] <- 10
+tmp$Hom[tmp$Hom > 10] <- 10
+make_dens_list(tmp, adjustas=5)
+make_scat_list(tmp) 
+do_bins_violin_inv(tmp)
+```
+
+
+### Any bins on EPD promoter
+
+```{r, fig.width=12}
+tmp <- (elementMetadata(dcov_gr[countOverlaps(dcov_gr, annotations[mcols(annotations)$type == "mm10_EPDpromoters"])>0]) %>% as.data.table())
+tmp$WT[tmp$WT > 10] <- 10
+tmp$Het[tmp$Het > 10] <- 10
+tmp$Hom[tmp$Hom > 10] <- 10
+make_dens_list(tmp, adjustas=5)
+make_scat_list(tmp) 
+do_bins_violin_inv(tmp)
+```
+
+### Any bins on Protein coding gene
+
+```{r, fig.width=12}
+tmp <- (elementMetadata(dcov_gr[countOverlaps(dcov_gr, annotations[mcols(annotations)$type == "mm10_proteinCoding"])>0]) %>% as.data.table())
+tmp$WT[tmp$WT > 10] <- 10
+tmp$Het[tmp$Het > 10] <- 10
+tmp$Hom[tmp$Hom > 10] <- 10
+make_dens_list(tmp)
+make_scat_list(tmp) 
+do_bins_violin_inv(tmp)
+```
+
+
+### Any bins on fantom enhancers
+```{r, fig.width=12}
+tmp <- (elementMetadata(dcov_gr[countOverlaps(dcov_gr, annotations[mcols(annotations)$type == "mm10_enhancers_fantom"])>0]) %>% as.data.table())
+tmp$WT[tmp$WT > 10] <- 10
+tmp$Het[tmp$Het > 10] <- 10
+tmp$Hom[tmp$Hom > 10] <- 10
+make_dens_list(tmp, adjustas=5)
+make_scat_list(tmp) 
+do_bins_violin_inv(tmp)
+```
+
+### At least 10 CG bins on CGI
+
+```{r, fig.width=12}
+tmp <- (elementMetadata(dcov_gr_th[countOverlaps(dcov_gr_th, annotations[mcols(annotations)$type == "mm10_cpg_islands"])>0]) %>% as.data.table())
+tmp$WT[tmp$WT > 10] <- 10
+tmp$Het[tmp$Het > 10] <- 10
+tmp$Hom[tmp$Hom > 10] <- 10
+make_dens_list(tmp, adjustas=5)
+make_scat_list(tmp) 
+do_bins_violin_inv(tmp)
+```
+
+### At least 10 CG bins on EPD promoter
+
+```{r, fig.width=12}
+tmp <- (elementMetadata(dcov_gr_th[countOverlaps(dcov_gr_th, annotations[mcols(annotations)$type == "mm10_EPDpromoters"])>0]) %>% as.data.table())
+tmp$WT[tmp$WT > 10] <- 10
+tmp$Het[tmp$Het > 10] <- 10
+tmp$Hom[tmp$Hom > 10] <- 10
+make_dens_list(tmp, adjustas=5)
+make_scat_list(tmp) 
+do_bins_violin_inv(tmp)
+```
+
+### At least 10 CG bins on Protein coding gene
+
+```{r, fig.width=12}
+tmp <- (elementMetadata(dcov_gr_th[countOverlaps(dcov_gr_th, annotations[mcols(annotations)$type == "mm10_proteinCoding"])>0]) %>% as.data.table())
+tmp$WT[tmp$WT > 10] <- 10
+tmp$Het[tmp$Het > 10] <- 10
+tmp$Hom[tmp$Hom > 10] <- 10
+make_dens_list(tmp)
+make_scat_list(tmp) 
+do_bins_violin_inv(tmp)
+```
+
+### At least 10 CG bins on fantom enhancers
+```{r, fig.width=12}
+tmp <- (elementMetadata(dcov_gr_th[countOverlaps(dcov_gr_th, annotations[mcols(annotations)$type == "mm10_enhancers_fantom"])>0]) %>% as.data.table())
+tmp$WT[tmp$WT > 10] <- 10
+tmp$Het[tmp$Het > 10] <- 10
+tmp$Hom[tmp$Hom > 10] <- 10
+make_dens_list(tmp, adjustas=5)
+make_scat_list(tmp) 
+do_bins_violin_inv(tmp)
+```
+
+## Coverages II 
+
+Firstly only CGs that were detected by TopSeq were selected. Then bins were constructed from such CGs and correlation calculated.
+Density plots are limited to specific values (outliers removal)
+
+```{r}
+make_scat2 <- function(x, y, xlab, ylab, titlas, adjustas, th=10) {
+  cbind(x, y) %>% 
+    as.data.table() %>% 
+    setnames(., c("x", "y")) %>% 
+    .[x > th, x := th ] %>% 
+    ggplot(aes(x, y)) +
+      stat_density_2d(aes(fill = after_stat(density)), geom = "raster", contour = FALSE, adjust = adjustas) +
+      scale_fill_distiller(palette= "RdYlBu", direction=-1) +
+      scale_x_continuous(expand = c(0, 0)) + 
+      scale_y_continuous(expand = c(0, 0)) + 
+      theme_bw() +
+      ylab(ylab) +
+      xlab(xlab) +
+      ggtitle(titlas) +
+      theme(legend.position="bottom", 
+            legend.key.width = unit(1, 'cm')
+           )  
+}    
+
+make_scat2(homo_bins_overlap_TopSeq$Hom, homo_bins_overlap_BS$WGBS_homo_met, "TopSeq", "WGBS", "Homo", 3, 20)
+make_scat2(het_bins_overlap_TopSeq$Het, het_bins_overlap_BS$WGBS_hetero_met, "TopSeq", "WGBS", "Hetero", 3, 20)
+make_scat2(wt_bins_overlap_TopSeq$WT, wt_bins_overlap_BS$WGBS_WT_met, "TopSeq", "WGBS", "WT", 3)
+```
+
+
+## Coverages III 
+
+CG level correlation between methylation and coverage. Using only overlapping CG. 
+
+Attention - X and y are changed here (x - methylation, y - TopSeq). 
+
+```{r}
+plot_graph <- function(xas, yas, titlas, limas=40) {
+  cbind(x=xas, y=yas) %>% 
+  as.data.table() %>% 
+  .[, met_group := add_group(x)] %>% 
+  .[met_group != "KITA", ] %>% 
+  .[, met_group := factor(met_group, levels=c("0", "(0-0.1]", "(0.1-0.2]", "(0.2-0.3]", "(0.3-0.4]", "(0.4-0.5]", "(0.5-0.6]", "(0.6-0.7]", "(0.7-0.8]", "(0.8-0.9]", "(0.9-1]"))] %>% 
+  ggplot(aes(met_group, y)) +
+    geom_violin() +
+    geom_boxplot(width=0.1, outlier.shape=NA) +
+    theme_bw() +
+    xlab("methylation group") +
+    ylab("TopSeq coverage") +
+    ggtitle(titlas)  +
+    coord_cartesian(ylim=c(0, limas)) +
+      theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))  
+} 
+
+
+non0_WT <- mcols(coveragesOrig_gr)$WT > 0
+non0_Het <- mcols(coveragesOrig_gr)$Het > 0 
+non0_Hom <- mcols(coveragesOrig_gr)$Hom > 0
+p1 <- plot_graph(y=coveragesOrig_gr[non0_WT, ]$WT, x=met_gr[non0_WT, ]$WGBS_WT_met/100, "WT", 15)  
+p2 <- plot_graph(y=coveragesOrig_gr[non0_Het, ]$Het, x=met_gr[non0_Het, ]$WGBS_hetero_met/100, "Hetero") 
+p3 <- plot_graph(y=coveragesOrig_gr[non0_Hom, ]$Hom, x=met_gr[non0_Hom, ]$WGBS_homo_met/100, "Homo")  
+
+p1 | p2 | p3
+
+```
+
+### CGI 
+
+Same as above, but using onli CGI data 
+
+```{r}
+non0_WT <- (mcols(coveragesOrig_gr)$WT > 0) & (countOverlaps(coveragesOrig_gr, annotations[mcols(annotations)$type ==  "mm10_cpg_islands"]) > 0)
+non0_Het <- (mcols(coveragesOrig_gr)$Het > 0) & (countOverlaps(coveragesOrig_gr, annotations[mcols(annotations)$type ==  "mm10_cpg_islands"]) > 0)
+non0_Hom <- (mcols(coveragesOrig_gr)$Hom > 0) & (countOverlaps(coveragesOrig_gr, annotations[mcols(annotations)$type ==  "mm10_cpg_islands"]) > 0)
+p1 <- plot_graph(y=coveragesOrig_gr[non0_WT, ]$WT, x=met_gr[non0_WT, ]$WGBS_WT_met/100, "WT", 15)  
+p2 <- plot_graph(y=coveragesOrig_gr[non0_Het, ]$Het, x=met_gr[non0_Het, ]$WGBS_hetero_met/100, "Hetero") 
+p3 <- plot_graph(y=coveragesOrig_gr[non0_Hom, ]$Hom, x=met_gr[non0_Hom, ]$WGBS_homo_met/100, "Homo")  
+  
+p1 | p2 | p3 
+```
+
+
+### enhancers
+
+Same as above, but using onli CGI data 
+
+```{r}
+non0_WT <- (mcols(coveragesOrig_gr)$WT > 0) & (countOverlaps(coveragesOrig_gr, annotations[mcols(annotations)$type == "mm10_enhancers_fantom"]) > 0)
+non0_Het <- (mcols(coveragesOrig_gr)$Het > 0) & (countOverlaps(coveragesOrig_gr, annotations[mcols(annotations)$type == "mm10_enhancers_fantom"]) > 0)
+non0_Hom <- (mcols(coveragesOrig_gr)$Hom > 0) & (countOverlaps(coveragesOrig_gr, annotations[mcols(annotations)$type == "mm10_enhancers_fantom"]) > 0)
+p1 <- plot_graph(y=coveragesOrig_gr[non0_WT, ]$WT, x=met_gr[non0_WT, ]$WGBS_WT_met/100, "WT", 15)  
+p2 <- plot_graph(y=coveragesOrig_gr[non0_Het, ]$Het, x=met_gr[non0_Het, ]$WGBS_hetero_met/100, "Hetero") 
+p3 <- plot_graph(y=coveragesOrig_gr[non0_Hom, ]$Hom, x=met_gr[non0_Hom, ]$WGBS_homo_met/100, "Homo")  
+  
+p1 | p2 | p3 
+```
+
+### silencers
+
+E14
+
+```{r}
+non0_WT <- (mcols(coveragesOrig_gr)$WT > 0) & (countOverlaps(coveragesOrig_gr, annotations[mcols(annotations)$type == "mm10_Silencer_E14"]) > 0)
+non0_Het <- (mcols(coveragesOrig_gr)$Het > 0) & (countOverlaps(coveragesOrig_gr, annotations[mcols(annotations)$type == "mm10_Silencer_E14"]) > 0)
+non0_Hom <- (mcols(coveragesOrig_gr)$Hom > 0) & (countOverlaps(coveragesOrig_gr, annotations[mcols(annotations)$type == "mm10_Silencer_E14"]) > 0)
+p1 <- plot_graph(y=coveragesOrig_gr[non0_WT, ]$WT, x=met_gr[non0_WT, ]$WGBS_WT_met/100, "WT", 15)  
+p2 <- plot_graph(y=coveragesOrig_gr[non0_Het, ]$Het, x=met_gr[non0_Het, ]$WGBS_hetero_met/100, "Hetero") 
+p3 <- plot_graph(y=coveragesOrig_gr[non0_Hom, ]$Hom, x=met_gr[non0_Hom, ]$WGBS_homo_met/100, "Homo")  
+  
+p1 | p2 | p3 
+```
+
+### silencers II
+
+mESC
+
+```{r}
+non0_WT <- (mcols(coveragesOrig_gr)$WT > 0) & (countOverlaps(coveragesOrig_gr, annotations[mcols(annotations)$type == "mm10_Silencer_mESC"]) > 0)
+non0_Het <- (mcols(coveragesOrig_gr)$Het > 0) & (countOverlaps(coveragesOrig_gr, annotations[mcols(annotations)$type == "mm10_Silencer_mESC"]) > 0)
+non0_Hom <- (mcols(coveragesOrig_gr)$Hom > 0) & (countOverlaps(coveragesOrig_gr, annotations[mcols(annotations)$type == "mm10_Silencer_mESC"]) > 0)
+p1 <- plot_graph(y=coveragesOrig_gr[non0_WT, ]$WT, x=met_gr[non0_WT, ]$WGBS_WT_met/100, "WT", 15)  
+p2 <- plot_graph(y=coveragesOrig_gr[non0_Het, ]$Het, x=met_gr[non0_Het, ]$WGBS_hetero_met/100, "Hetero") 
+p3 <- plot_graph(y=coveragesOrig_gr[non0_Hom, ]$Hom, x=met_gr[non0_Hom, ]$WGBS_homo_met/100, "Homo")  
+  
+p1 | p2 | p3 
+```
+
+
+
+### LINE
+
+Same as above, but using onli CGI data 
+
+```{r}
+non0_WT <- (mcols(coveragesOrig_gr)$WT > 0) & (countOverlaps(coveragesOrig_gr, repeatai[mcols(repeatai)$Class == "LINE"]) > 0)
+non0_Het <- (mcols(coveragesOrig_gr)$Het > 0) & (countOverlaps(coveragesOrig_gr,repeatai[mcols(repeatai)$Class == "LINE"]) > 0)
+non0_Hom <- (mcols(coveragesOrig_gr)$Hom > 0) & (countOverlaps(coveragesOrig_gr, repeatai[mcols(repeatai)$Class == "LINE"]) > 0)
+p1 <- plot_graph(y=coveragesOrig_gr[non0_WT, ]$WT, x=met_gr[non0_WT, ]$WGBS_WT_met/100, "WT", 15)  
+p2 <- plot_graph(y=coveragesOrig_gr[non0_Het, ]$Het, x=met_gr[non0_Het, ]$WGBS_hetero_met/100, "Hetero") 
+p3 <- plot_graph(y=coveragesOrig_gr[non0_Hom, ]$Hom, x=met_gr[non0_Hom, ]$WGBS_homo_met/100, "Homo")  
+  
+p1 | p2 | p3 
+```
+
+
+### SINE
+
+Same as above, but using onli CGI data 
+
+```{r}
+non0_WT <- (mcols(coveragesOrig_gr)$WT > 0) & (countOverlaps(coveragesOrig_gr, repeatai[mcols(repeatai)$Class == "LINE"]) > 0)
+non0_Het <- (mcols(coveragesOrig_gr)$Het > 0) & (countOverlaps(coveragesOrig_gr, repeatai[mcols(repeatai)$Class == "LINE"]) > 0)
+non0_Hom <- (mcols(coveragesOrig_gr)$Hom > 0) & (countOverlaps(coveragesOrig_gr, repeatai[mcols(repeatai)$Class == "LINE"]) > 0)
+p1 <- plot_graph(y=coveragesOrig_gr[non0_WT, ]$WT, x=met_gr[non0_WT, ]$WGBS_WT_met/100, "WT", 15)  
+p2 <- plot_graph(y=coveragesOrig_gr[non0_Het, ]$Het, x=met_gr[non0_Het, ]$WGBS_hetero_met/100, "Hetero") 
+p3 <- plot_graph(y=coveragesOrig_gr[non0_Hom, ]$Hom, x=met_gr[non0_Hom, ]$WGBS_homo_met/100, "Homo")  
+  
+p1 | p2 | p3 
+```
+
+## TopSeq II
+
+TopSeq correlations between hetro and homo. 
+Skipping CpGs that were not tageted in any of the samples.  
+
+Using only first 1M CpGs. Data is limited (coverage higher than 25 changed to 25). 
+```{r}
+d <- cbind(Het=mcols(coveragesOrig_gr)$Het, Hom=mcols(coveragesOrig_gr)$Hom) %>% 
+  as.data.table() %>% 
+  .[, suma := Het+Hom] %>% 
+  .[suma != 0, ] %>% 
+  .[, suma := NULL] 
+
+d %>% 
+  .[1:1000000, ] %>% 
+  .[Het > 25, Het := 25] %>% 
+  .[Hom > 25, Hom := 25] %>% 
+  ggplot(aes(Het, Hom)) +
+    stat_density_2d(aes(fill = after_stat(density)), geom = "raster", contour = FALSE) +
+    scale_fill_distiller(palette= "RdYlBu", direction=-1) +
+    scale_x_continuous(expand = c(0, 0)) + 
+    scale_y_continuous(expand = c(0, 0)) + 
+    theme_bw() +
+    ylab("homo") +
+    xlab("hetero") +
+    theme(legend.position="bottom", 
+          legend.key.width = unit(1, 'cm')
+          ) +
+    ggtitle("CG level")
+```
+
+Same as above, but using those CG that were caught by both hetero and homo. Using all CG.  
+
+```{r}
+d <- cbind(Het=mcols(coveragesOrig_gr)$Het, Hom=mcols(coveragesOrig_gr)$Hom) %>% 
+  as.data.table() %>%
+  .[Het > 0, ] %>% 
+  .[Hom > 0] 
+
+d %>% 
+  .[Het > 25, Het := 25] %>% 
+  .[Hom > 25, Hom := 25] %>% 
+  ggplot(aes(Het, Hom)) +
+    stat_density_2d(aes(fill = after_stat(density)), geom = "raster", contour = FALSE) +
+    scale_fill_distiller(palette= "RdYlBu", direction=-1) +
+    scale_x_continuous(expand = c(0, 0)) + 
+    scale_y_continuous(expand = c(0, 0)) + 
+    theme_bw() +
+    ylab("homo") +
+    xlab("hetero") +
+    theme(legend.position="bottom", 
+          legend.key.width = unit(1, 'cm')
+          ) +
+    ggtitle("CG level")
+
+```
+
+same as above, but using bins. In this case normalized fraction of CpG coverage was calcualted. Two variants:
+left is "either Het or Hom"; right is "Het and Hom". 
+
+```{r}
+p1 <- dcov %>% 
+  .[, .(Het, Hom)] %>% 
+  .[, suma := Het+Hom] %>% 
+  .[suma != 0, ] %>% 
+  .[, suma := NULL] %>% 
+  .[Het > 10, Het := 10] %>% 
+  .[Hom > 10, Hom := 10] %>% 
+  .[1:1000000, ] %>% 
+  ggplot(aes(Het, Hom)) +
+    stat_density_2d(aes(fill = after_stat(density)), geom = "raster", contour = FALSE) +
+    scale_fill_distiller(palette= "RdYlBu", direction=-1) +
+    scale_x_continuous(expand = c(0, 0)) + 
+    scale_y_continuous(expand = c(0, 0)) + 
+    theme_bw() +
+    ylab("homo") +
+    xlab("hetero") +
+    #stat_poly_eq(use_label(c("adj.R2", "p"))) +
+    stat_cor(aes(label = paste(..rr.label.., ..p.label.., sep = "~`,`~"))) + 
+    theme(legend.position="bottom", 
+          legend.key.width = unit(1, 'cm')
+          ) +
+    ggtitle("Bins level. Any Het/Hom")
+
+p2 <- dcov %>% 
+  .[, .(Het, Hom)] %>% 
+  .[Het > 0, ] %>% 
+  .[Hom > 0, ] %>% 
+  .[Het > 10, Het := 10] %>% 
+  .[Hom > 10, Hom := 10] %>% 
+  .[1:1000000, ] %>% 
+  ggplot(aes(Het, Hom)) +
+    stat_density_2d(aes(fill = after_stat(density)), geom = "raster", contour = FALSE) +
+    scale_fill_distiller(palette= "RdYlBu", direction=-1) +
+    scale_x_continuous(expand = c(0, 0)) + 
+    scale_y_continuous(expand = c(0, 0)) + 
+    theme_bw() +
+    ylab("homo") +
+    xlab("hetero") +
+    #stat_poly_eq(use_label(c("adj.R2", "p"))) +
+    stat_cor(aes(label = paste(..rr.label.., ..p.label.., sep = "~`,`~"))) + 
+    theme(legend.position="bottom", 
+          legend.key.width = unit(1, 'cm')
+          ) +
+    ggtitle("Bins level. Both Het and Hom")
+
+p1 | p2 
+```    
+
+
+Same as above, but skipping bins with few CpGs.
+
+```{r}
+p1 <- ddcov %>% 
+  .[, .(Het, Hom)] %>% 
+  .[, suma := Het+Hom] %>% 
+  .[suma != 0, ] %>% 
+  .[, suma := NULL] %>% 
+  .[Het > 10, Het := 10] %>% 
+  .[Hom > 10, Hom := 10] %>% 
+  .[1:1000000, ] %>% 
+  ggplot(aes(Het, Hom)) +
+    stat_density_2d(aes(fill = after_stat(density)), geom = "raster", contour = FALSE) +
+    scale_fill_distiller(palette= "RdYlBu", direction=-1) +
+    scale_x_continuous(expand = c(0, 0)) + 
+    scale_y_continuous(expand = c(0, 0)) + 
+    theme_bw() +
+    ylab("homo") +
+    xlab("hetero") +
+    #stat_poly_eq(use_label(c("adj.R2", "p"))) +
+    stat_cor(aes(label = paste(..rr.label.., ..p.label.., sep = "~`,`~"))) + 
+    theme(legend.position="bottom", 
+          legend.key.width = unit(1, 'cm')
+          ) +
+    ggtitle("Bins level. Any Het/Hom")
+
+p2 <- ddcov %>% 
+  .[, .(Het, Hom)] %>% 
+  .[Het > 0, ] %>% 
+  .[Hom > 0, ] %>% 
+  .[Het > 10, Het := 10] %>% 
+  .[Hom > 10, Hom := 10] %>% 
+  .[1:1000000, ] %>% 
+  ggplot(aes(Het, Hom)) +
+    stat_density_2d(aes(fill = after_stat(density)), geom = "raster", contour = FALSE) +
+    scale_fill_distiller(palette= "RdYlBu", direction=-1) +
+    scale_x_continuous(expand = c(0, 0)) + 
+    scale_y_continuous(expand = c(0, 0)) + 
+    theme_bw() +
+    ylab("homo") +
+    xlab("hetero") +
+    #stat_poly_eq(use_label(c("adj.R2", "p"))) +
+    stat_cor(aes(label = paste(..rr.label.., ..p.label.., sep = "~`,`~"))) + 
+    theme(legend.position="bottom", 
+          legend.key.width = unit(1, 'cm')
+          ) +
+    ggtitle("Bins level. Both Het and Hom")
+
+p1 | p2 
+```    
+
+
+

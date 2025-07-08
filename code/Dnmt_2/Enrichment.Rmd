@@ -1,0 +1,589 @@
+```{r}
+library(pacman)
+p_load(data.table, dplyr, ggplot2, rtracklayer, RColorBrewer, scales, foreach, GenomicRanges, clusterProfiler, doParallel, 
+viridis, annotatr, stringr, GGally, EnrichedHeatmap, circlize, corrplot, patchwork, org.Mm.eg.db, ggvenn)
+options(scipen=999)
+knitr::opts_chunk$set(fig.width=9, fig.height=7, error = TRUE)
+dir.create(outdatadir, recursive=TRUE)
+source("./code/common.R")
+cols_samplesLong  <- c("A0D_met"=brewer.pal(n=9,"Reds")[2],
+                       "A2D_met"=brewer.pal(n=9,"Reds")[3],
+                       "A4D_met"=brewer.pal(n=9,"Reds")[5],
+                       "A8D_met"=brewer.pal(n=9,"Reds")[7],
+                       "D0azide"=brewer.pal(n=9,"Greens")[2],
+                       "D2azide"=brewer.pal(n=9,"Greens")[4],
+                       "D4azide"=brewer.pal(n=9,"Greens")[6],
+                       "D8azide"=brewer.pal(n=9,"Greens")[8] 
+                        )
+registerDoParallel(6)
+
+outdatadir <- "./output/code/Dnmt_2/Enrichment/"
+
+```
+
+# Profiles {.tabset}  
+
+BlackListed regions are present/counted.  
+
+
+```{r}
+samples2do_BS <- c("A0D_met", "A2D_met", "A4D_met", "A8D_met")
+samples2do_TOP <- c("D0azide_R1", "D2azide_R1", "D4azide_R1", "D8azide_R1", "D0azide_R2", "D2azide_R2", "D4azide_R2", "D8azide_R2") 
+coverages <- readRDS("./output/code/PrepAllData/diferenciacija_coverages2useTopData.RDS")
+coverages <- coverages %>% 
+  .[D0azide>0, D0azide := 1] %>% 
+  .[D2azide>0, D2azide := 1] %>% 
+  .[D4azide>0, D4azide := 1] %>% 
+  .[D8azide>0, D8azide := 1] %>% 
+  .[D0azide_R1>0, D0azide_R1 := 1] %>% 
+  .[D2azide_R1>0, D2azide_R1 := 1] %>% 
+  .[D4azide_R1>0, D4azide_R1 := 1] %>% 
+  .[D8azide_R1>0, D8azide_R1 := 1] %>% 
+  .[D0azide_R2>0, D0azide_R2 := 1] %>% 
+  .[D2azide_R2>0, D2azide_R2 := 1] %>% 
+  .[D4azide_R2>0, D4azide_R2 := 1] %>% 
+  .[D8azide_R2>0, D8azide_R2 := 1] %>% 
+  .[, end := start] %>% 
+  #.[, c("chr", "start", "end", samples2do_TOP), with=FALSE] %>% 
+  .[chr %in% paste0("chr", c(1:19, "X", "Y"))] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+tmp <- readRDS(paste0("output/code/PrepAllData//dAnnotations.RDS"))
+repeatai <- tmp[["repeatai"]]
+mcols(repeatai)$type <- paste0(mcols(repeatai)$Name, "_", mcols(repeatai)$Class, "_", mcols(repeatai)$Familly)
+annotations <- tmp[["anotacijos"]]
+annotations <- annotations[seqnames(annotations) %in% paste0("chr", c(1:19, "X", "Y"))]
+anotacijos <- c(annotations, repeatai)
+
+tmp <- readRDS(paste0("output/code/PrepAllData//differentiations_RRBS.RDS"))
+met_gr <- tmp[["methylation_gr_th"]]
+met_gr <- met_gr[seqnames(met_gr) %in% paste0("chr", c(1:19, "X", "Y"))]
+
+rm(tmp)
+gc()
+```
+
+# Enrichment azidinimas{.tabset}  
+
+## Promoters 
+
+```{r}
+cov_CGI <- coverages[countOverlaps(coverages, annotations[annotations$type == "mm10_cpg_islands"]) > 0, ]
+promotoriai <- annotations[annotations$type == "mm10_EPDpromoters"]
+
+tmp <- foreach(i=samples2do_TOP) %do% {
+  sam2do <- cov_CGI[elementMetadata(cov_CGI)[, i] > 0]
+  fo <- findOverlaps(promotoriai, sam2do)
+  return(promotoriai[queryHits(fo)]$gene_id %>% unique) 
+}
+names(tmp) <- samples2do_TOP
+D0_genes <- intersect(tmp$D0azide_R1, tmp$D0azide_R2)
+D2_genes <- intersect(tmp$D2azide_R1, tmp$D2azide_R2)
+D4_genes <- intersect(tmp$D4azide_R1, tmp$D4azide_R2) 
+D8_genes <- intersect(tmp$D8azide_R1, tmp$D8azide_R2) 
+
+```
+
+Venn diagrams representing overlap between replicates/conditions. 
+
+```{r}
+ggvenn(list(R1=tmp$D0azide_R1, R2=tmp$D0azide_R2)) + ggtitle("Overlap between replicates. D0")
+ggvenn(list(R1=tmp$D2azide_R1, R2=tmp$D2azide_R2)) + ggtitle("Overlap between replicates. D2")
+ggvenn(list(R1=tmp$D4azide_R1, R2=tmp$D4azide_R2)) + ggtitle("Overlap between replicates. D4")
+ggvenn(list(R1=tmp$D8azide_R1, R2=tmp$D8azide_R2)) + ggtitle("Overlap between replicates. D8")
+ggvenn(list(D0=D0_genes, D2=D2_genes, D4=D4_genes, D8=D8_genes)) + ggtitle("Overlap between timepoints")
+```
+
+Enrichment (GO BP). There were no results with WT. 
+0.01 threshold was applied. 
+
+```{r,  fig.width=9, fig.height=20}
+listas <- list(D0=D0_genes, D2=D2_genes, D4=D4_genes, D8=D8_genes)
+
+ck <- compareCluster(geneCluster = listas, 
+                     fun = enrichGO, 
+                     universe = promotoriai$gene_id, 
+                     OrgDb = org.Mm.eg.db, readable = TRUE, 
+                     pvalueCutoff  = 0.01,
+                     qvalueCutoff  = 0.01,
+                     pAdjustMethod = "BH",
+                     keyType = "ENSEMBL", ont = "BP")
+saveRDS(ck, paste0(outdatadir, "GO_enrichment.RDS"))
+dotplot(ck, show=50)
+```
+
+Alternatyvi versija - čia paėmiau po 1000 CG salų, kurios turi didžiausią taikinių frakciją ir tas salas susiejau su promotoriais. Toks metodas atitinka RRBS. 
+
+```{r}
+fo <- findOverlaps(coverages, annotations[annotations$type == "mm10_cpg_islands"]) 
+
+gr <- cbind(as.data.table(elementMetadata(coverages[queryHits(fo)])), mcols(annotations[annotations$type == "mm10_cpg_islands"][subjectHits(fo)])$id) %>% 
+  as.data.table() %>% 
+  .[, ID := NULL] %>%
+  .[, lapply(.SD, sum), by="V2"] %>% 
+  merge(., (as.data.table(annotations[annotations$type == "mm10_cpg_islands"])), by.y="id", by.x="V2") %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+mcols(gr)$nCG <- countOverlaps(gr, coverages)
+
+gr <- gr %>% 
+  as.data.table() %>% 
+  .[, D0azide_R1 := D0azide_R1/nCG] %>%
+  .[, D0azide_R2 := D0azide_R2/nCG] %>%
+  .[, D2azide_R1 := D2azide_R1/nCG] %>%
+  .[, D2azide_R2 := D2azide_R2/nCG] %>%
+  .[, D4azide_R1 := D4azide_R1/nCG] %>%
+  .[, D4azide_R2 := D4azide_R2/nCG] %>%
+  .[, D8azide_R1 := D8azide_R1/nCG] %>%
+  .[, D8azide_R2 := D8azide_R2/nCG] %>%
+  .[]
+
+
+
+salos_D0 <- gr %>% 
+  as.data.table() %>% 
+  .[, .(D0azide_R1, D0azide_R2, V2)] %>% 
+  .[, vidurkis := (D0azide_R1+D0azide_R2)/2] %>% 
+  setkey(., vidurkis) %>% 
+  tail(., 1000) %>% 
+  merge(., as.data.table(annotations[annotations$type == "mm10_cpg_islands"]), by.x="V2", by.y="id") %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+salos_D2 <- gr %>% 
+  as.data.table() %>% 
+  .[, .(D2azide_R1, D2azide_R2, V2)] %>% 
+  .[, vidurkis := (D2azide_R1+D2azide_R2)/2] %>% 
+  setkey(., vidurkis) %>% 
+  tail(., 1000) %>% 
+  merge(., as.data.table(annotations[annotations$type == "mm10_cpg_islands"]), by.x="V2", by.y="id") %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+salos_D4 <- gr %>% 
+  as.data.table() %>% 
+  .[, .(D4azide_R1, D4azide_R2, V2)] %>% 
+  .[, vidurkis := (D4azide_R1+D4azide_R2)/2] %>% 
+  setkey(., vidurkis) %>% 
+  tail(., 1000) %>% 
+  merge(., as.data.table(annotations[annotations$type == "mm10_cpg_islands"]), by.x="V2", by.y="id") %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+salos_D8 <- gr %>% 
+  as.data.table() %>% 
+  .[, .(D8azide_R1, D8azide_R2, V2)] %>% 
+  .[, vidurkis := (D8azide_R1+D8azide_R2)/2] %>% 
+  setkey(., vidurkis) %>% 
+  tail(., 1000) %>% 
+  merge(., as.data.table(annotations[annotations$type == "mm10_cpg_islands"]), by.x="V2", by.y="id") %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+D0_genes <- mcols(promotoriai[countOverlaps(promotoriai, salos_D0) >0, ])$gene_id
+D2_genes <- mcols(promotoriai[countOverlaps(promotoriai, salos_D2) >0, ])$gene_id
+D4_genes <- mcols(promotoriai[countOverlaps(promotoriai, salos_D4) >0, ])$gene_id
+D8_genes <- mcols(promotoriai[countOverlaps(promotoriai, salos_D8) >0, ])$gene_id
+```
+
+```{r,  fig.width=9, fig.height=20}
+listas <- list(D0=D0_genes, D2=D2_genes, D4=D4_genes, D8=D8_genes)
+
+ck <- compareCluster(geneCluster = listas, 
+                     fun = enrichGO, 
+                     universe = promotoriai$gene_id, 
+                     OrgDb = org.Mm.eg.db, readable = TRUE, 
+                     pvalueCutoff  = 0.01,
+                     qvalueCutoff  = 0.01,
+                     pAdjustMethod = "BH",
+                     keyType = "ENSEMBL", ont = "BP")
+saveRDS(ck, paste0(outdatadir, "GO_enrichmentDnmt_var2.RDS"))
+dotplot(ck, show=50)
+```
+
+
+
+## CG level 
+
+```{r, fig.height=9}
+elements2do <- c("mm10_proteinCoding", "mm10_genes_intergenic", "mm10_genes_exons", "mm10_genes_5UTRs", "mm10_genes_1to5kb", "mm10_EPDpromoters",
+                "mm10_cpg_shelves", "mm10_cpg_inter", "mm10_cpg_islands", "mm10_cpg_shores", "mm10_EPDpromotersNC", "mm10_genes_cds", "mm10_genes_firstexons",
+                "mm10_genes_introns", "mm10_processedPseudogene", "mm10_UnProcessedPseudogene")
+
+do_enrichment <- function(featuras, samplas, annotation=annotations)  {
+#  featuras <- "mm10_cpg_islands"
+#  samplas <- "Hom_R1"
+  
+  if(!(file.exists(paste0(outdatadir, "Enri_", featuras, "_", samplas, ".RDS")))) {
+    anno <- annotation[annotation$type == featuras]
+    meginys_pos <- coverages[elementMetadata(coverages)[, samplas]>0]
+    meginys_neg <- coverages[elementMetadata(coverages)[, samplas]==0]
+    in_cat_pos <- sum(countOverlaps(meginys_pos, anno)>0)
+    in_cat_neg <- sum(countOverlaps(meginys_neg, anno)>0)
+    not_cat_pos <- sum(countOverlaps(meginys_pos, anno)==0)
+    not_cat_neg <- sum(countOverlaps(meginys_neg, anno)==0)
+    d <- data.frame(CG_interest=c(in_cat_pos, not_cat_pos), CG_not_interest=c(in_cat_neg, not_cat_neg))  
+    fi <- fisher.test(d)
+    rezu <- data.table(Pval=fi$p.value, Enri=fi$estimate, Elem=featuras, Sample=samplas, Ntarget=length(meginys_pos))
+    saveRDS(rezu, paste0(outdatadir, "Enri_", featuras, "_", samplas, ".RDS"))
+    return(rezu)
+  } else {tmp <- readRDS(paste0(outdatadir, "Enri_", featuras, "_", samplas, ".RDS")); return(tmp)}
+} 
+
+
+enri <- foreach(i=samples2do_TOP, .combine="rbind") %dopar% {
+  ret <- foreach(j=elements2do, .combine="rbind") %do% {
+    ret <- do_enrichment(j, i)
+    return(ret) }
+  return(ret)  
+} %>% 
+  .[Pval <= 0.05, ] %>% 
+  .[, replicate := str_extract( Sample, "R[0-9]")]  %>% 
+  .[, type := strsplit(Sample, "_") %>% sapply(., `[`, 1)]  %>% 
+  .[, Enri := Enri] %>% 
+  .[, lapply(.SD, mean, na.rm=TRUE), by=c("type", "Elem"), .SDcols=c("Enri")] 
+
+
+enri %>% 
+  ggplot(aes(Elem, Enri, colour=type)) +
+    geom_point() +
+    coord_flip() +
+    theme_Publication() 
+```
+
+```{r, fig.height=8}
+reps2do <- c("Alu", "DNA", "ERV1", "ERVK", "hAT", "L1", "LTR", "MIR", "RNA", "Satellite", "scRNA", "snRNA", "srpRNA", "tRNA", "Simple_repeat" )
+repeatai$type <- repeatai$Familly
+enri <- foreach(i=samples2do_TOP, .combine="rbind") %dopar% {
+  ret <- foreach(j=reps2do, .combine="rbind") %do% {
+    ret <- do_enrichment(j, i, repeatai)
+    return(ret) }
+  return(ret)  
+} %>% 
+  .[Pval <= 0.05, ] %>% 
+  .[, replicate := str_extract( Sample, "R[0-9]")]  %>% 
+  .[, type := strsplit(Sample, "_") %>% sapply(., `[`, 1)]  %>% 
+  .[, Enri := Enri] %>% 
+  .[, lapply(.SD, mean, na.rm=TRUE), by=c("type", "Elem"), .SDcols=c("Enri")] 
+
+enri %>% 
+  ggplot(aes(Elem, Enri, colour=type)) +
+    geom_point() +
+    coord_flip() +
+    theme_Publication() 
+```
+
+
+Update 
+
+
+```{r, fig.height=7}
+coverages2 <- copy(coverages)
+gff <- import("gencode.vM23.annotation.gtf")
+
+# darom nauja anotacija 
+
+tmp <- annotations[mcols(annotations)$type == "mm10_genes_3UTRs"]
+mcols(tmp)$type <- "3UTRs"
+tmp_annotations <- copy(tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_genes_5UTRs"]
+mcols(tmp)$type <- "5UTRs"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_lncrna_gencode"]
+mcols(tmp)$type <- "lncRNA_gencode"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_genes_exons"]
+mcols(tmp)$type <- "exons"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_genes_introns"]
+mcols(tmp)$type <- "introns"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_EPDpromoters"]
+mcols(tmp)$type <- "promoterEPD"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_EPDpromotersNC"]
+mcols(tmp)$type <- "promoter_NC_EPD"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_transcriptsCoding"]
+mcols(tmp)$type <- "codingTranscripts"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_islands"][countOverlaps(annotations[mcols(annotations)$type == "mm10_cpg_islands"], annotations[mcols(annotations)$type == "mm10_EPDpromoters"]) > 0]
+mcols(tmp)$type <- "CGI promoter"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_islands"][countOverlaps(annotations[mcols(annotations)$type == "mm10_cpg_islands"], annotations[mcols(annotations)$type == "mm10_genes_intergenic"]) > 0]
+mcols(tmp)$type <- "CGI intergenic"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_islands"][countOverlaps(annotations[mcols(annotations)$type == "mm10_cpg_islands"], annotations[mcols(annotations)$type == "mm10_transcriptsCoding"]) > 0]
+mcols(tmp)$type <- "CGI intragenic"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_shelves"]
+mcols(tmp)$type <- "CGI shelves"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_shores"]
+mcols(tmp)$type <- "CGI shores"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- annotations[mcols(annotations)$type == "mm10_cpg_islands"]
+mcols(tmp)$type <- "CGI all"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- gff[mcols(gff)$gene_type == "miRNA"] 
+mcols(tmp) <- NULL 
+mcols(tmp)$type <- "miRNA"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- gff[mcols(gff)$gene_type == "snoRNA"]
+mcols(tmp) <- NULL 
+mcols(tmp)$type <- "snoRNA"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- gff[mcols(gff)$gene_type == "snRNA"]
+mcols(tmp) <- NULL 
+mcols(tmp)$type <- "snRNA"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+elements2do <- c("3UTRs", "5UTRs", "lncRNA_gencode", "exons", "introns", "promoterEPD", "promoter_NC_EPD", "codingTranscripts", "CGI promoter", "CGI intergenic", "CGI intragenic", "CGI shelves", "CGI shores", "CGI all", "miRNA", "snoRNA", "snRNA")
+
+
+do_enrichment <- function(featuras, samplas, annotation=annotations, covai=coverages)  {
+#  featuras <- "mm10_cpg_islands"
+#  samplas <- "Hom_R1"
+  
+  if(!(file.exists(paste0(outdatadir, "Enri_", featuras, "_", samplas, ".RDS")))) {
+    anno <- annotation[annotation$type == featuras]
+    meginys_pos <- covai[elementMetadata(covai)[, samplas]>0]
+    meginys_neg <- covai[elementMetadata(covai)[, samplas]==0]
+    in_cat_pos <- sum(countOverlaps(meginys_pos, anno)>0)
+    in_cat_neg <- sum(countOverlaps(meginys_neg, anno)>0)
+    not_cat_pos <- sum(countOverlaps(meginys_pos, anno)==0)
+    not_cat_neg <- sum(countOverlaps(meginys_neg, anno)==0)
+    d <- data.frame(CG_interest=c(in_cat_pos, not_cat_pos), CG_not_interest=c(in_cat_neg, not_cat_neg))  
+    fi <- fisher.test(d)
+    rezu <- data.table(Pval=fi$p.value, Enri=fi$estimate, Elem=featuras, Sample=samplas, Ntarget=length(meginys_pos))
+    saveRDS(rezu, paste0(outdatadir, "Enri_", featuras, "_", samplas, ".RDS"))
+    return(rezu)
+  } else {tmp <- readRDS(paste0(outdatadir, "Enri_", featuras, "_", samplas, ".RDS")); return(tmp)}
+} 
+
+
+enri <- foreach(i=samples2do_TOP, .combine="rbind") %dopar% {
+  ret <- foreach(j=elements2do, .combine="rbind") %do% {
+    ret <- do_enrichment(j, i, annotation=tmp_annotations, covai=coverages2)
+    return(ret) }
+  return(ret)  
+} %>% 
+  .[Pval <= 0.05, ] %>% 
+  .[, replicate := str_extract( Sample, "R[0-9]")]  %>% 
+  .[, type := strsplit(Sample, "_") %>% sapply(., `[`, 1)]  %>% 
+  .[, Enri := Enri] %>% 
+  .[, lapply(.SD, mean, na.rm=TRUE), by=c("type", "Elem"), .SDcols=c("Enri")] 
+
+
+enri %>% 
+  ggplot(aes(Elem, Enri, fill=type)) +
+    geom_point(shape=21, size=2) +
+    coord_flip() +
+    theme_Publication() +
+    scale_fill_manual(values=cols_samples) 
+
+enri_genomic <- copy(enri)    
+```
+
+```{r, fig.height=4}
+tmp <- repeatai[mcols(repeatai)$Class == "DNA"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "DNA"
+tmp_annotations <- copy(tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "SINE"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "SINE"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "LINE"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "LINE"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "LTR"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "LTR"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "Simple_repeat"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "Simples"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+
+tmp <- repeatai[mcols(repeatai)$Class == "Satellite"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "Satellite"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+tmp <- repeatai[mcols(repeatai)$Class == "Low_complexity"]
+mcols(tmp) <- NULL
+mcols(tmp)$type <- "Low_complexity"
+tmp_annotations <- c(tmp_annotations, tmp)
+
+reps2do <- c("DNA", "SINE", "LINE", "LTR", "Simples", "Satellite", "Low_complexity")
+
+enri <- foreach(i=samples2do_TOP, .combine="rbind") %dopar% {
+  ret <- foreach(j=reps2do, .combine="rbind") %do% {
+    ret <- do_enrichment(j, i, tmp_annotations, covai=coverages2)
+    return(ret) }
+  return(ret)  
+} %>% 
+  .[Pval <= 0.05, ] %>% 
+  .[, replicate := str_extract( Sample, "R[0-9]")]  %>% 
+  .[, type := strsplit(Sample, "_") %>% sapply(., `[`, 1)]  %>% 
+  .[, Enri := Enri] %>% 
+  .[, lapply(.SD, mean, na.rm=TRUE), by=c("type", "Elem"), .SDcols=c("Enri")] 
+
+enri %>% 
+  as.data.table() %>%
+  ggplot(aes(Elem, Enri, fill=type)) +
+    geom_point(shape=21, size=2) +
+    coord_flip() +
+    theme_Publication() +
+    scale_fill_manual(values=cols_samplesLong) 
+
+```
+
+Tas pats, kas viršuje, bet sudėta kartu
+
+```{r}
+d <- rbind(enri, enri_genomic)
+
+saveRDS(d, paste0(outdatadir, "Enrichment_CG.RDS"))
+
+ggplot(d, aes(Elem, Enri, fill=type)) +
+  geom_point(shape=21, size=2) +
+  coord_flip() +
+  theme_Publication() +
+  scale_fill_manual(values=cols_samples) 
+```
+
+
+# Enrichment RRBS {.tabset}  
+
+## Mean 
+
+
+
+```{r}
+#cov_CGI <- met_gr[countOverlaps(met_gr, annotations[annotations$type == "mm10_cpg_islands"]) > 0, ]
+promotoriai <- annotations[annotations$type == "mm10_EPDpromoters"]
+fo <- findOverlaps(promotoriai, met_gr)
+
+d <- cbind(mcols(promotoriai[queryHits(fo)])$gene_id, elementMetadata(met_gr[subjectHits(fo)])) %>% 
+  as.data.table() %>% 
+  .[, ID := NULL] %>% 
+  setnames(, c("ID", samples2do_BS)) %>% 
+  .[, lapply(.SD, mean, na.rm=TRUE), by="ID"] %>% 
+  .[]
+
+D0_genes <- d[] %>% setkey(., "A0D_met") %>% tail(., 1000) %>% .[, ID]
+D2_genes <- d[] %>% setkey(., "A2D_met") %>% tail(., 1000) %>% .[, ID]
+D4_genes <- d[] %>% setkey(., "A4D_met") %>% tail(., 1000) %>% .[, ID]
+D8_genes <- d[] %>% setkey(., "A8D_met") %>% tail(., 1000) %>% .[, ID]
+```
+
+```{r,  fig.width=9, fig.height=20}
+listas <- list(D0=D0_genes, D2=D2_genes, D4=D4_genes, D8=D8_genes)
+
+ck <- compareCluster(geneCluster = listas, 
+                     fun = enrichGO, 
+                     universe = promotoriai$gene_id, 
+                     OrgDb = org.Mm.eg.db, readable = TRUE, 
+                     pvalueCutoff  = 0.01,
+                     qvalueCutoff  = 0.01,
+                     pAdjustMethod = "BH",
+                     keyType = "ENSEMBL", ont = "BP")
+saveRDS(ck, paste0(outdatadir, "GO_enrichment_RRBSmena.RDS"))
+dotplot(ck, show=50)
+```
+
+## Median 
+
+
+```{r}
+#cov_CGI <- met_gr[countOverlaps(met_gr, annotations[annotations$type == "mm10_cpg_islands"]) > 0, ]
+promotoriai <- annotations[annotations$type == "mm10_EPDpromoters"]
+fo <- findOverlaps(promotoriai, met_gr)
+
+d <- cbind(mcols(promotoriai[queryHits(fo)])$gene_id, elementMetadata(met_gr[subjectHits(fo)])) %>% 
+  as.data.table() %>% 
+  .[, ID := NULL] %>% 
+  setnames(, c("ID", samples2do_BS)) %>% 
+  .[, lapply(.SD, median, na.rm=TRUE), by="ID"] %>% 
+  .[]
+
+D0_genes <- d[] %>% setkey(., "A0D_met") %>% tail(., 1000) %>% .[, ID]
+D2_genes <- d[] %>% setkey(., "A2D_met") %>% tail(., 1000) %>% .[, ID]
+D4_genes <- d[] %>% setkey(., "A4D_met") %>% tail(., 1000) %>% .[, ID]
+D8_genes <- d[] %>% setkey(., "A8D_met") %>% tail(., 1000) %>% .[, ID]
+```
+
+```{r,  fig.width=9, fig.height=20}
+listas <- list(D0=D0_genes, D2=D2_genes, D4=D4_genes, D8=D8_genes)
+
+ck <- compareCluster(geneCluster = listas, 
+                     fun = enrichGO, 
+                     universe = promotoriai$gene_id, 
+                     OrgDb = org.Mm.eg.db, readable = TRUE, 
+                     pvalueCutoff  = 0.01,
+                     qvalueCutoff  = 0.01,
+                     pAdjustMethod = "BH",
+                     keyType = "ENSEMBL", ont = "BP")
+saveRDS(ck, paste0(outdatadir, "GO_enrichment_RRBSmedian.RDS"))
+dotplot(ck, show=50)
+```
+
+## CGI 
+
+
+```{r}
+CGI <- annotations[annotations$type == "mm10_cpg_islands"]
+promotoriai <- annotations[annotations$type == "mm10_EPDpromoters"]
+fo <- findOverlaps(CGI, met_gr)
+
+d <- cbind(mcols(CGI[queryHits(fo)])$id, elementMetadata(met_gr[subjectHits(fo)])) %>% 
+  as.data.table() %>% 
+  .[, ID := NULL] %>% 
+  setnames(., c("ID", samples2do_BS)) %>% 
+  .[, lapply(.SD, mean, na.rm=TRUE), by="ID"] %>% 
+  .[]
+
+fo <- findOverlaps(promotoriai, CGI)
+CGI2prom <- cbind(mcols(promotoriai[queryHits(fo)])$gene_id, mcols(CGI[subjectHits(fo)])$id) %>% 
+  as.data.table() %>% 
+  setnames(., c("geneID", "CGI_id"))
+
+D0_genes <- d[] %>% setkey(., "A0D_met") %>% tail(., 1000) %>% merge(., CGI2prom, by.y="CGI_id", by.x="ID") %>% .[, geneID] %>% unique
+D2_genes <- d[] %>% setkey(., "A2D_met") %>% tail(., 1000) %>% merge(., CGI2prom, by.y="CGI_id", by.x="ID") %>% .[, geneID] %>% unique
+D4_genes <- d[] %>% setkey(., "A4D_met") %>% tail(., 1000) %>% merge(., CGI2prom, by.y="CGI_id", by.x="ID") %>% .[, geneID] %>% unique
+D8_genes <- d[] %>% setkey(., "A8D_met") %>% tail(., 1000) %>% merge(., CGI2prom, by.y="CGI_id", by.x="ID") %>% .[, geneID] %>% unique
+```
+
+```{r,  fig.width=9, fig.height=20}
+listas <- list(D0=D0_genes, D2=D2_genes, D4=D4_genes, D8=D8_genes)
+
+ck <- compareCluster(geneCluster = listas, 
+                     fun = enrichGO, 
+                     universe = promotoriai$gene_id, 
+                     OrgDb = org.Mm.eg.db, readable = TRUE, 
+                     pvalueCutoff  = 0.01,
+                     qvalueCutoff  = 0.01,
+                     pAdjustMethod = "BH",
+                     keyType = "ENSEMBL", ont = "BP")
+saveRDS(ck, paste0(outdatadir, "GO_enrichment_RRBSCGIvar.RDS"))
+dotplot(ck, show=50)
+```

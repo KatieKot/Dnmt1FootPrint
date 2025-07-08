@@ -1,0 +1,880 @@
+```{r}
+library(pacman)
+p_load(data.table, dplyr, ggplot2, rtracklayer, RColorBrewer, scales, foreach, 
+viridis, annotatr, stringr, GGally, EnrichedHeatmap, circlize, corrplot, patchwork)
+options(scipen=999)
+knitr::opts_chunk$set(fig.width=9, fig.height=7)
+dir.create(outdatadir, recursive=TRUE)
+source("code/common.R")
+```
+
+# RRBS data {.tabset}
+
+BlackListed regions are present/counted.   
+
+```{r}
+samples2do <- c("A0D", "A2D", "A4D", "A8D")
+tmp <- readRDS(paste0("output/code/PrepAllData//dAnnotations.RDS"))
+repeatai <- tmp[["repeatai"]]
+mcols(repeatai)$type <- paste0(mcols(repeatai)$Name, "_", mcols(repeatai)$Class, "_", mcols(repeatai)$Familly)
+annotations <- tmp[["anotacijos"]]
+anotacijos <- c(annotations, repeatai)
+
+gene_style_features <- c(annotations[mcols(annotations)$type == "mm10_genes_3UTRs"], 
+                         annotations[mcols(annotations)$type == "mm10_genes_5UTRs"], 
+                         annotations[mcols(annotations)$type == "mm10_genes_cds"], 
+                         annotations[mcols(annotations)$type == "mm10_genes_exons"], 
+                         annotations[mcols(annotations)$type == "mm10_genes_introns"], 
+                         annotations[mcols(annotations)$type == "mm10_proteinCoding"]
+) %>% reduce()
+
+tmp <- readRDS(paste0("output/code/PrepAllData//differentiations_RRBS.RDS"))
+met_gr_full <- tmp[["methylation_gr_full"]]
+met_gr <- tmp[["methylation_gr_th"]]
+
+total_cov <- tmp[["raw"]] %>% .[, c("ID", paste0(samples2do, "_cov")), with=FALSE]
+total_cov[is.na(total_cov)] <- 0
+total_raw <- tmp[["raw"]]
+
+methylation <- tmp[["methylation_gr_th"]] %>% as.data.table() %>% 
+  .[, `:=` (seqnames = NULL, start = NULL, end = NULL, width = NULL, strand = NULL)]
+methylation_full <- tmp[["methylation_gr_full"]] %>% as.data.table()  %>% 
+  .[, `:=` (seqnames = NULL, start = NULL, end = NULL, width = NULL, strand = NULL)]
+
+rm(tmp)
+gc()
+met_samples <- c("A0D_met", "A2D_met", "A4D_met", "A8D_met")
+```
+
+## Library stats 
+
+```{r}
+# Number of target CG by coverage 
+rezu <- foreach(i=c(1, 2, 3, 5, 7, 10, 15), .combine="rbind") %do% { 
+  foreach(j=paste0(samples2do, "_cov"), .combine="rbind") %do% {
+    data.frame(kiekis=nrow(total_cov[get(j) >= i,  ]), samplas=j, threshold=i) 
+  }
+}
+
+rezu %>% 
+  as.data.table() %>%
+  .[, threshold := as.character(threshold)] %>% 
+  .[, threshold := factor(threshold, levels = paste0(c(1, 2, 3, 5, 7, 10, 15))) ] %>% 
+  ggplot(aes(samplas, kiekis, fill=threshold)) +
+    geom_col(position="dodge") +
+    theme_bw() +
+    ggtitle("Number of targets") +
+    ylab("Targets") +
+    xlab("Sample") +
+    scale_fill_brewer(palette="Dark2") +
+    labs(fill="Coverage\nthreshold") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+    scale_y_continuous(labels = label_number(suffix = " M", scale = 1e-6))
+
+# Number of reads 
+
+if(!file.exists(paste0(outdatadir, "libSizes.RDS"))) {
+  A0D <- system(paste0("zcat ", "/mnt/store/sequencingRawData/Giedrius/22.12.09_RRBS_updated230118/A0D_R1_val_1.fq.gz", " | wc -l"), intern=TRUE)
+  A2D <- system(paste0("zcat ", "/mnt/store/sequencingRawData/Giedrius/22.12.09_RRBS_updated230118/A2D_R1_val_1.fq.gz", " | wc -l"), intern=TRUE)
+  A4D <- system(paste0("zcat ", "/mnt/store/sequencingRawData/Giedrius/22.12.09_RRBS_updated230118/A4D_R1_val_1.fq.gz", " | wc -l"), intern=TRUE)
+  A8D <- system(paste0("zcat ", "/mnt/store/sequencingRawData/Giedrius/22.12.09_RRBS_updated230118/A8D_R1_val_1.fq.gz", " | wc -l"), intern=TRUE)
+  tmp <- c(A0D=A0D, A2D=A2D, A4D=A4D, A8D=A8D ) 
+  saveRDS(tmp, paste0(outdatadir, "libSizes.RDS"))  
+} else {tmp <- readRDS(paste0(outdatadir, "libSizes.RDS"))}
+
+melt(tmp) %>%  
+  as.data.table(., keep.rownames=TRUE) %>% 
+  .[, value := as.numeric(value)] %>% 
+  .[, value := value / 4] %>% 
+  ggplot(aes(rn, value)) +
+    geom_col() +
+    theme_bw() +
+    ylab("Reads") +
+    xlab("Sample") +
+    ggtitle("Raw library size") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+    scale_y_continuous(labels = label_number(suffix = " M", scale = 1e-6)) 
+```
+
+
+## Binned data
+
+Genome was divided into bins (100 bp, 500 bp, 1 kb, 2 kb), methylation was averaged per bin and used to calculate pearson correlation. All coverages and all methylation levels used.
+For PCA analysis, there are two variants: one were all bins were used and second were only bins with RRBS signal (coverage not 0 in at least on RRBS sample) were used. 
+
+All CpG with coverage <5 not counted. 
+
+```{r}
+plotPCA <- function(x, taitlas, samp2do) {
+  tmp <- x[, paste0(samp2do, "_met"), with=FALSE]
+  tmp <- tmp[!is.na(rowSums(tmp)), ]
+
+  pca <- tmp %>% t %>% prcomp()
+  summ <- summary(pca)
+  p <- pca$x %>% 
+    as.data.table(., keep.rownames=TRUE) %>% 
+    ggplot(aes(PC1, PC2, colour=rn)) +
+      geom_point(size=3) +
+      theme_bw() +
+      labs(subtitle=paste0("PCA ", taitlas,  ". All bins")) +
+      theme(legend.position="bottom") +
+      xlab(paste0("PC 1: ", round(summ$importance[2,1]*100), "%")) +
+      ylab(paste0("PC 2: ", round(summ$importance[2,2]*100), "%")) 
+  return(p)    
+}
+
+bin_size <- 100
+binai <- methylation %>% 
+  .[, bin_id := paste0( strsplit(ID, "_") %>% sapply(., `[`, 1), "_", ceiling((strsplit(ID, "_") %>% sapply(., `[`, 2) %>% as.numeric)/bin_size))] %>% 
+  .[, lapply(.SD, mean, na.rm=TRUE), by="bin_id", .SDcols=paste0(samples2do, "_met")] 
+p01kb <- plotCor(binai, "Bins (100bp) level correlation")
+p01kb_PCA2 <- plotPCA(binai, "100bp", samples2do)
+
+bin_size <- 500
+binai <- methylation %>% 
+  .[, bin_id := paste0( strsplit(ID, "_") %>% sapply(., `[`, 1), "_", ceiling((strsplit(ID, "_") %>% sapply(., `[`, 2) %>% as.numeric)/bin_size))] %>% 
+  .[, lapply(.SD, mean, na.rm=TRUE), by="bin_id", .SDcols=paste0(samples2do, "_met")] 
+p05kb <- plotCor(binai, "Bins (500bp) level correlation")
+p05kb_PCA2 <- plotPCA(binai, "500bp", samples2do)
+
+bin_size <- 1000
+binai <- methylation %>% 
+  .[, bin_id := paste0( strsplit(ID, "_") %>% sapply(., `[`, 1), "_", ceiling((strsplit(ID, "_") %>% sapply(., `[`, 2) %>% as.numeric)/bin_size))] %>% 
+  .[, lapply(.SD, mean, na.rm=TRUE), by="bin_id", .SDcols=paste0(samples2do, "_met")] 
+p1kb <- plotCor(binai, "Bins (1000bp) level correlation")
+p1kb_PCA2 <- plotPCA(binai, "1000bp", samples2do)
+
+bin_size <- 2000
+binai <- methylation %>% 
+  .[, bin_id := paste0( strsplit(ID, "_") %>% sapply(., `[`, 1), "_", ceiling((strsplit(ID, "_") %>% sapply(., `[`, 2) %>% as.numeric)/bin_size))] %>% 
+  .[, lapply(.SD, mean, na.rm=TRUE), by="bin_id", .SDcols=paste0(samples2do, "_met")] 
+p2kb <- plotCor(binai, "Bins (2000bp) level correlation")
+p2kb_PCA2 <- plotPCA(binai, "2000bp", samples2do)
+
+saveRDS(list(binai=binai), paste0(outdatadir, "bins2kb_CorScat.RDS"))
+
+p <- (p01kb | p05kb) / (p1kb | p2kb) + plot_layout(guides = "collect") & theme(legend.position = 'bottom')
+p 
+
+p <- (p01kb_PCA2) / (p05kb_PCA2) / (p1kb_PCA2) / (p2kb_PCA2)
+p <- p + plot_layout(guides = "collect") & theme(legend.position = 'bottom')
+p
+```
+
+## Whole genome
+
+Per CpG level data. Using threshold that are indicated.. 
+
+### Ddensity 
+
+```{r}
+p2 <- methylation_full[, paste0(samples2do, "_met"), with=FALSE] %>% 
+  melt() %>% 
+  .[, variable := gsub("_met", "", variable)] %>% 
+  ggplot(aes(x=value, colour=variable, fill=variable)) +
+    geom_density(key_glyph = "rect", alpha=0.5) +
+    theme_bw() +
+    xlab("methylation") +
+    scale_colour_brewer(palette="Dark2", name="sample") +
+    scale_fill_brewer(palette="Dark2", name="sample", guide = 'none') +
+    labs(subtitle="All CG", colour="sample") +
+    theme(legend.position="bottom") +
+    guides(colour = guide_legend(override.aes = list(alpha = 1)), fill = guide_legend(override.aes = list(alpha = 1)))
+
+p3 <- methylation[, paste0(samples2do, "_met"), with=FALSE] %>% 
+  melt() %>% 
+  .[, variable := gsub("_met", "", variable)] %>% 
+  ggplot(aes(x=value, colour=variable, fill=variable)) +
+    geom_density(key_glyph = "rect", alpha=0.5) +
+    theme_bw() +
+    xlab("methylation") +
+    scale_colour_brewer(palette="Dark2", name="sample") +
+    scale_fill_brewer(palette="Dark2", name="sample", guide = 'none') +
+    labs(subtitle="CG cov > 4", colour="sample") + 
+    theme(legend.position="bottom") +
+    guides(colour = guide_legend(override.aes = list(alpha = 1)), fill = guide_legend(override.aes = list(alpha = 1)))
+
+p4 <- methylation_full[, paste0(samples2do, "_met"), with=FALSE] %>% 
+  melt() %>% 
+  .[, variable := gsub("_met", "", variable)] %>% 
+  ggplot(aes(x=value, colour=variable)) +
+    geom_density(key_glyph = "rect", alpha=0.5) +
+    theme_bw() +
+    xlab("methylation") +
+    scale_colour_brewer(palette="Dark2", name="sample") +
+    scale_fill_brewer(palette="Dark2", name="sample", guide = 'none') +
+    labs(subtitle="Density. All CG", colour="sample") +
+    theme(legend.position="bottom") +
+    guides(colour = guide_legend(override.aes = list(alpha = 1)), fill = guide_legend(override.aes = list(alpha = 1)))
+
+p5 <- methylation[, paste0(samples2do, "_met"), with=FALSE] %>% 
+  melt() %>% 
+  .[, variable := gsub("_met", "", variable)] %>% 
+  ggplot(aes(x=value, colour=variable)) +
+    geom_density(key_glyph = "rect", alpha=0.5) +
+    theme_bw() +
+    xlab("methylation") +
+    scale_colour_brewer(palette="Dark2", name="sample") +
+    labs(subtitle="CG cov > 4", colour="sample") + 
+    scale_fill_brewer(palette="Dark2", name="sample", guide = 'none') +
+    theme(legend.position="bottom") +
+    guides(colour = guide_legend(override.aes = list(alpha = 1)), fill = guide_legend(override.aes = list(alpha = 1)))
+
+
+tmp <- methylation[, paste0(samples2do, "_met"), with=FALSE] %>% 
+#head(10000) %>% 
+  melt() %>% 
+  .[, variable := gsub("_met", "", variable)] %>% 
+  .[, tipas := str_extract(variable, "..BS")]  
+saveRDS(tmp, paste0(outdatadir, "DensityPlot.RDS"))
+
+p <- (p2 | p3) / (p4 | p5)  + plot_layout(guides = "collect") & theme(legend.position = 'bottom')
+p 
+```
+
+
+CG level correlation, Cov > 4
+
+```{r}
+methylation[, c("ID", paste0(samples2do, "_met")), with=FALSE] %>% 
+ plotCor(., "CpG level correlation. Cov>4")
+```
+
+### Per chromosome data 
+
+Methylation and coverage per chromosome. 
+
+```{r}
+methylation_full %>% 
+  as.data.table %>% 
+  .[, chr := str_extract(ID, "chr[0-9XY]+")] %>% 
+  .[, c(paste0(samples2do, "_met"), "chr"), with=FALSE] %>% 
+  melt() %>% 
+  ggplot(aes(chr, value)) +
+    geom_violin() +
+    geom_boxplot(width=0.1, outlier.shape=NA) +
+    facet_wrap(~variable) +
+    theme_bw() +
+    labs(subtitle="Methylation. All CpG") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+th <- 4
+tmp <- methylation %>% 
+  as.data.table %>% 
+  .[, chr := str_extract(ID, "chr[0-9XY]+")] %>% 
+  .[, c(paste0(samples2do, "_met"), "chr"), with=FALSE] %>% 
+  melt() %>% 
+  as.data.table() %>% 
+  .[, variable := factor(variable, levels=paste0(samples2do, "_met"))] %>% 
+  .[, chr := factor(chr, levels=c(paste0("chr", c(1:19, "X", "Y"))))]
+saveRDS(tmp, paste0(outdatadir, "perChromosomeData.RDS"))  
+tmp %>% 
+  ggplot(aes(chr, value)) +
+    geom_violin() +
+    geom_boxplot(width=0.1, outlier.shape=NA) +
+    facet_wrap(~variable) +
+    theme_bw() +
+    labs(subtitle="Methylation. All CpG cov > 4") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+### Methylation groups
+
+CpGs were divided into groups based on methylation levels and a simple stacked barplot was plotted. Groups: 
+
+No signal = no reads or less than 5 reads 
+0-20 - methylation between 0 and 20. At least 5 reads. 
+
+```{r}
+get_groups <- function(x, y, th=4) {
+  x <- unlist(x)
+  x[is.na(x)] <- 0
+  y <- unlist(y)
+  y[is.na(y)] <- 0
+  return(data.frame(nuliniai=sum(y <= th), mazai=sum(x[y>th] <= 20),  daugiau=sum((x[y>th] > 20) & (x[y>th] <=40)), 
+                    dardaugiau=sum((x[y>th] > 40) & (x[y>th] <=60)), dardardaugiau=sum((x[y>th] > 60) & (x[y>th] <=80)), 
+                    labaidaug=sum((x[y>th] > 80) & (x[y>th] <=95)), begalo=sum((x[y>th] > 95))) %>% as.data.table())  
+}
+
+tmp <- foreach(i=samples2do, .combine="rbind") %do% {
+  get_groups(methylation[, paste0(i, "_met"), with=FALSE], total_cov[, paste0(i, "_cov"), with=FALSE]) %>% as.data.table %>% .[, samplas := i]
+}
+viso <- as.data.table(tmp) %>% .[1, ] %>% .[, samplas := NULL] %>% sum
+tmp %>% 
+  melt() %>% 
+  .[, fr := value/viso] %>% 
+  .[, variable := factor(variable, levels=c("begalo", "labaidaug", "dardardaugiau", "dardaugiau", "daugiau", "mazai", "nuliniai"), 
+                                   labels=c("(95-100]", "(80-95]", "(60-80]", "(40-60]", "(20-40]", "(0-20]", "0"))] %>% 
+  .[, technology := str_extract(samplas, "..BS")] %>%  
+  .[, type := strsplit(samplas, "_") %>% sapply(., `[`, 1)] %>% 
+  .[, type := factor(type, levels=samples2do)] %>%  
+  ggplot(aes(type, fr, fill=variable)) +
+    geom_col(position="stack") +
+    theme_bw() +
+    scale_fill_brewer(palette="Dark2", name="Methylation") +
+    ylab("Fraction of all CpG")
+```
+
+Same, but NAs skipped. Each sample may contain different amount of CGs here. 
+
+
+```{r}
+get_groups <- function(x, y, th=4) {
+  x <- unlist(x)
+  x <- x[!is.na(x)]
+
+  dt <- data.frame(nuliniai=sum(x == 0), mazai=sum((x > 0) & (x <=20)),  daugiau=sum((x > 20) & (x <=40)), 
+                    dardaugiau=sum((x > 40) & (x <=60)), dardardaugiau=sum((x > 60) & (x <=80)), 
+                    labaidaug=sum((x > 80) & (x <=95)), begalo=sum((x > 95))) %>% as.data.table()         
+  return(  dt/sum(x>=0)  )  
+}
+
+tmp <- foreach(i=samples2do, .combine="rbind") %do% {
+  get_groups(methylation[, paste0(i, "_met"), with=FALSE]) %>% as.data.table %>% .[, samplas := i]
+}
+
+temp <- tmp %>% 
+  melt() %>% 
+  .[, variable := factor(variable, levels=c("begalo", "labaidaug", "dardardaugiau", "dardaugiau", "daugiau", "mazai", "nuliniai"), 
+                                   labels=c("(95-100]", "(80-95]", "(60-80]", "(40-60]", "(20-40]", "(0-20]", "0"))]
+
+saveRDS(temp, paste0(outdatadir, "StackedCols_groups.RDS"))
+ggplot(temp, aes(samplas, value, fill=variable)) +
+    geom_col(position="stack") +
+    theme_bw() +
+    scale_fill_brewer(palette="Dark2", name="Methylation") +
+    ylab("Fraction of all CpG")    
+```
+
+Kitokie variantai: 
+
+```{r, eval=TRUE}
+tmp <- rbind(
+  as.data.table(add_gr_1(methylation$A0D_met)) %>% 
+    .[, sample := "A0D"], 
+  as.data.table(add_gr_1(methylation$A2D_met)) %>% 
+    .[, sample := "A2D"], 
+  as.data.table(add_gr_1(methylation$A4D_met)) %>% 
+    .[, sample := "A4D"],   
+  as.data.table(add_gr_1(methylation$A8D_met)) %>% 
+    .[, sample := "A8D"]) %>% 
+  as.data.table() %>% 
+  setnames(".", "group")
+
+tmp <- tmp %>% 
+  .[, group := factor(group, levels=rev(c("lowCov", "0-20", "20-80", "80-100")))] %>% 
+  .[, sample := factor(sample, levels=c("A0D", "A2D", "A4D", "A8D"))]
+saveRDS(tmp, paste0(outdatadir, "StackedCols_groups_var1.RDS"))
+ggplot(tmp, aes(sample, N, fill=group)) +
+    geom_col(position="stack") +
+    scale_fill_brewer(palette="Set1", name="Methylation") +
+    theme_Publication() +
+    theme(legend.position="bottom", axis.title=element_blank()) +
+    scale_y_continuous(labels = scales::percent) +
+    guides(fill=guide_legend(nrow=2,byrow=TRUE))           
+```
+
+Tas pats kaip viršuje, bet pašalinti cov<5 CG. Šiuo atveju procentai skaičiuoti kiekvienam mėginiui individualiai (t.y. dalinta ne iš visų genomo CG kiekio, o iš to, kiek mėginy buvo CG su coverage > 4)
+
+```{r, eval=TRUE}
+tmp <- rbind(
+  as.data.table(add_gr_1_noNA(methylation$A0D_met)) %>% 
+    .[, sample := "A0D"], 
+  as.data.table(add_gr_1_noNA(methylation$A2D_met)) %>% 
+    .[, sample := "A2D"], 
+  as.data.table(add_gr_1_noNA(methylation$A4D_met)) %>% 
+    .[, sample := "A4D"],   
+  as.data.table(add_gr_1_noNA(methylation$A8D_met)) %>% 
+    .[, sample := "A8D"]) %>% 
+  as.data.table() %>% 
+  setnames(".", "group")
+
+tmp <-tmp %>% 
+  .[, group := factor(group, levels=rev(c("lowCov", "0-20", "20-80", "80-100")))] %>% 
+  .[, sample := factor(sample, levels=c("A0D", "A2D", "A4D", "A8D"))]
+saveRDS(tmp, paste0(outdatadir, "StackedCols_groups_var1_noNA.RDS"))  
+
+ggplot(tmp, aes(sample, N, fill=group)) +
+    geom_col(position="stack") +
+    scale_fill_brewer(palette="Set1", name="Methylation") +
+    theme_Publication() +
+    theme(legend.position="bottom", axis.title=element_blank()) +
+    scale_y_continuous(labels = scales::percent) +
+    guides(fill=guide_legend(nrow=2,byrow=TRUE))           
+```
+
+Kitos grupės 
+
+```{r, eval=TRUE}
+tmp <- rbind(
+  as.data.table(add_gr_2(methylation$A0D_met)) %>% 
+    .[, sample := "A0D"], 
+  as.data.table(add_gr_2(methylation$A2D_met)) %>% 
+    .[, sample := "A2D"], 
+  as.data.table(add_gr_2(methylation$A4D_met)) %>% 
+    .[, sample := "A4D"],   
+  as.data.table(add_gr_2(methylation$A8D_met)) %>% 
+    .[, sample := "A8D"]) %>% 
+  as.data.table() %>% 
+  setnames(".", "group")
+
+tmp <- tmp %>% 
+  .[, group := factor(group, levels=rev(c("lowCov", "0-10", "10-50", "50-100")))] %>% 
+  .[, sample := factor(sample, levels=c("A0D", "A2D", "A4D", "A8D"))]
+saveRDS(tmp, paste0(outdatadir, "StackedCols_groups_var2.RDS"))
+
+ggplot(tmp, aes(sample, N, fill=group)) +
+    geom_col(position="stack") +
+    scale_fill_brewer(palette="Set1", name="Methylation") +
+    theme_Publication() +
+    theme(legend.position="bottom", axis.title=element_blank()) +
+    scale_y_continuous(labels = scales::percent)  +
+    guides(fill=guide_legend(nrow=2,byrow=TRUE))           
+```
+
+```{r, eval=TRUE}
+tmp <- rbind(
+  as.data.table(add_gr_2_noNA(methylation$A0D_met)) %>% 
+    .[, sample := "A0D"], 
+  as.data.table(add_gr_2_noNA(methylation$A2D_met)) %>% 
+    .[, sample := "A2D"], 
+  as.data.table(add_gr_2_noNA(methylation$A4D_met)) %>% 
+    .[, sample := "A4D"],   
+  as.data.table(add_gr_2_noNA(methylation$A8D_met)) %>% 
+    .[, sample := "A8D"]) %>% 
+  as.data.table() %>% 
+  setnames(".", "group")
+
+tmp <- tmp %>% 
+  .[, group := factor(group, levels=rev(c("lowCov", "0-10", "10-50", "50-100")))] %>% 
+  .[, sample := factor(sample, levels=c("A0D", "A2D", "A4D", "A8D"))]
+saveRDS(tmp, paste0(outdatadir, "StackedCols_groups_var2_noNA.RDS"))  
+  ggplot(tmp, aes(sample, N, fill=group)) +
+    geom_col(position="stack") +
+    scale_fill_brewer(palette="Set1", name="Methylation") +
+    theme_Publication() +
+    theme(legend.position="bottom", axis.title=element_blank()) +
+    scale_y_continuous(labels = scales::percent) +
+    guides(fill=guide_legend(nrow=2,byrow=TRUE))           
+```
+
+
+
+
+### Total methylation
+
+"Suminis metilinimas" - calculating total C/T reads per all CpGs. Using all CpGs (with any coverage). 
+
+```{r}
+tmp <- total_raw[, -1] %>% colSums(., na.rm=TRUE) %>% t %>% as.data.table()
+temp <- data.frame(
+  A0D=tmp$A0D_C/(tmp$A0D_C+tmp$A0D_T),
+  A2D=tmp$A2D_C/(tmp$A2D_C+tmp$A2D_T), 
+  A4D=tmp$A4D_C/(tmp$A4D_C+tmp$A4D_T),
+  A8D=tmp$A8D_C/(tmp$A8D_C+tmp$A8D_T))  %>% 
+    melt() %>% 
+    as.data.table() %>% 
+    .[, variable := factor(variable, levels=samples2do)] 
+saveRDS(temp, paste0(outdatadir, "TotalMethylation.RDS"))
+
+p1 <- ggplot(temp, aes(variable, value)) +
+      geom_col() +
+      theme_bw() +
+      ggtitle("All CG") +
+      ylab("methylation") +
+      theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), 
+            axis.title.x=element_blank()) +
+      scale_y_continuous(labels = scales::percent)                 
+```
+
+```{r}
+total_raw_mod <- copy(total_raw)
+total_raw_mod <- total_raw_mod %>% 
+  .[A0D_cov < 5, `:=` (A0D_C = NA, A0D_T = NA)] %>% 
+  .[A2D_cov < 5, `:=` (A0D_C = NA, A0D_T = NA)] %>% 
+  .[A4D_cov < 5, `:=` (A4D_C = NA, A4D_T = NA)] %>% 
+  .[A8D_cov < 5, `:=` (A8D_C = NA, A8D_T = NA)] 
+
+tmp <- total_raw_mod[, -1] %>% colSums(., na.rm=TRUE) %>% t %>% as.data.table()
+temp <- data.frame(
+  A0D=tmp$A0D_C/(tmp$A0D_C+tmp$A0D_T),
+  A2D=tmp$A2D_C/(tmp$A2D_C+tmp$A2D_T), 
+  A4D=tmp$A4D_C/(tmp$A4D_C+tmp$A4D_T),
+  A8D=tmp$A8D_C/(tmp$A8D_C+tmp$A8D_T))  %>% 
+    melt() %>% 
+    as.data.table() %>% 
+    .[, variable := factor(variable, levels=samples2do)] 
+saveRDS(temp, paste0(outdatadir, "TotalMethylationCov5.RDS"))
+
+p2 <- ggplot(temp, aes(variable, value)) +
+      geom_col() +
+      theme_bw() +
+      ggtitle("CG cov > 4") +
+      ylab("methylation") +
+      theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), 
+            axis.title.x=element_blank()) +
+      scale_y_continuous(labels = scales::percent)   
+
+feat <- "mm10_cpg_islands"
+feat2do <- annotations[mcols(annotations)$type ==  feat]
+total_raw_mod <- total_raw_mod %>% 
+  .[, chr := strsplit(ID, "_") %>% sapply(., `[`, 1)] %>% 
+  .[, start := strsplit(ID, "_") %>% sapply(., `[`, 2)] %>% 
+  .[, end := strsplit(ID, "_") %>% sapply(., `[`, 2)] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)  
+
+i <- countOverlaps(total_raw_mod, feat2do)
+CGI_CG <- total_raw_mod[i > 0, ] 
+neCGI_CG <- total_raw_mod[i == 0, ]
+
+tmp <- CGI_CG %>% 
+  as.data.table() %>% 
+  .[, -(1:6)] %>% 
+  colSums(., na.rm=TRUE) %>% 
+  t %>% 
+  as.data.table()
+
+temp <- data.frame(
+  A0D=tmp$A0D_C/(tmp$A0D_C+tmp$A0D_T),
+  A2D=tmp$A2D_C/(tmp$A2D_C+tmp$A2D_T), 
+  A4D=tmp$A4D_C/(tmp$A4D_C+tmp$A4D_T),
+  A8D=tmp$A8D_C/(tmp$A8D_C+tmp$A8D_T))  %>% 
+    melt() %>% 
+    as.data.table() %>% 
+    .[, variable := factor(variable, levels=c("A0D", "A2D", "A4D", "A8D"))] 
+
+saveRDS(temp, paste0(outdatadir, "TotalMethylationCov5_onlyCGI.RDS"))
+
+tmp <- neCGI_CG %>% 
+  as.data.table() %>% 
+  .[, -(1:6)] %>% 
+  colSums(., na.rm=TRUE) %>% 
+  t %>% 
+  as.data.table()
+
+temp <- data.frame(
+  A0D=tmp$A0D_C/(tmp$A0D_C+tmp$A0D_T),
+  A2D=tmp$A2D_C/(tmp$A2D_C+tmp$A2D_T), 
+  A4D=tmp$A4D_C/(tmp$A4D_C+tmp$A4D_T),
+  A8D=tmp$A8D_C/(tmp$A8D_C+tmp$A8D_T))  %>% 
+    melt() %>% 
+    as.data.table() %>% 
+  .[, variable := factor(variable, levels=c("A0D", "A2D", "A4D", "A8D"))] 
+
+saveRDS(temp, paste0(outdatadir, "TotalMethylationCov5_onlyNotCGI.RDS"))
+
+```
+
+```{r}
+p1 | p2 
+```
+
+### Some more plots
+
+Relationship between samples using 2d density plot. 
+Using only those CpG that have coverage of at least 5 in both samples that are being plotted (this means that different CpGs are used in each plot)
+
+```{r}
+th <- 4
+p1 <- methylation[total_cov$A0D_cov > th & total_cov$A2D_cov > th, ] %>% 
+  ggplot(aes(x=A0D_met, y=A2D_met) ) +
+    stat_density_2d(aes(fill = ..density..), geom = "raster", contour = FALSE, adjust = 10) +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_bw() +
+    scale_fill_distiller(palette= "RdYlBu", direction=-1) + 
+    theme(legend.position='none') 
+ 
+p2 <- methylation[total_cov$A0D_cov > th & total_cov$A4D_cov > th, ] %>% 
+  ggplot(aes(x=A0D_met, y=A4D_met) ) +
+    stat_density_2d(aes(fill = ..density..), geom = "raster", contour = FALSE, adjust = 10) +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_bw() +
+    scale_fill_distiller(palette= "RdYlBu", direction=-1) + 
+    theme(legend.position='none')  
+    
+p3 <- methylation[total_cov$A0D_cov > th & total_cov$A8D_cov > th, ] %>% 
+  ggplot(aes(x=A0D_met, y=A8D_met) ) +
+    stat_density_2d(aes(fill = ..density..), geom = "raster", contour = FALSE, adjust = 10) +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_bw() +
+    scale_fill_distiller(palette= "RdYlBu", direction=-1) + 
+    theme(legend.position='none')      
+
+p4 <- methylation[total_cov$A4D_cov > th & total_cov$A8D_cov > th, ] %>% 
+  ggplot(aes(x=A4D_met, y=A8D_met) ) +
+    stat_density_2d(aes(fill = ..density..), geom = "raster", contour = FALSE, adjust = 10) +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_bw() +
+    scale_fill_distiller(palette= "RdYlBu", direction=-1) + 
+    theme(legend.position='none')  
+
+p5 <- methylation[total_cov$A2D_cov > th & total_cov$A4D_cov > th, ] %>% 
+  ggplot(aes(x=A2D_met, y=A4D_met) ) +
+    stat_density_2d(aes(fill = ..density..), geom = "raster", contour = FALSE, adjust = 10) +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_bw() +
+    scale_fill_distiller(palette= "RdYlBu", direction=-1) + 
+    theme(legend.position='none')      
+
+p6 <- methylation[total_cov$A2D_cov > th & total_cov$A8D_cov > th, ] %>% 
+  ggplot(aes(x=A2D_met, y=A8D_met) ) +
+    stat_density_2d(aes(fill = ..density..), geom = "raster", contour = FALSE, adjust = 10) +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_bw() +
+    scale_fill_distiller(palette= "RdYlBu", direction=-1) + 
+    theme(legend.position='none')  
+
+
+(p1 | p2) / (p3 | p4) / (p5 | p6)
+```
+
+## Specific elements 
+
+```{r}
+visi <- met_gr %>% as.data.table() %>% .[, met_samples, with=FALSE]
+genai <- met_gr[countOverlaps(met_gr, gene_style_features)>0] %>% as.data.table() %>% .[, met_samples, with=FALSE]
+lncRNA <- met_gr[countOverlaps(met_gr, annotations[mcols(annotations)$type == "mm10_lncrna_gencode"])>0] %>% as.data.table() %>% .[, met_samples, with=FALSE]
+TE <- met_gr[countOverlaps(met_gr, repeatai)>0] %>% as.data.table() %>% .[, met_samples, with=FALSE]
+Promotoriai <- met_gr[countOverlaps(met_gr, annotations[mcols(annotations)$type == "mm10_EPDpromoters"])>0] %>% as.data.table() %>% .[, met_samples, with=FALSE]
+
+temp <- c(annotations[mcols(annotations)$type == "mm10_PoisedEnhancers_Atlas"], annotations[mcols(annotations)$type == "mm10_ActiveEnhancers_Atlas"])
+enhanceriai_dt <- met_gr[countOverlaps(met_gr, temp)>0] %>% as.data.table() %>% .[, met_samples, with=FALSE]
+superEnhanceriai_dt <- met_gr[countOverlaps(met_gr, annotations[mcols(annotations)$type == "mm10_superEnhancer"])>0] %>% as.data.table() %>% .[, met_samples, with=FALSE]
+silenceriai_dt <- met_gr[countOverlaps(met_gr, annotations[mcols(annotations)$type == "mm10_Silencer_E14"])>0] %>% as.data.table() %>% .[, met_samples, with=FALSE]
+CTCF_dt <- met_gr[countOverlaps(met_gr, annotations[mcols(annotations)$type == "mm10_CTCF"])>0] %>% as.data.table() %>% .[, met_samples, with=FALSE]
+
+tmp <- rbind(
+  melt(visi) %>% .[, type := "All CpG"],
+  melt(genai) %>% .[, type := "genes"],
+  melt(lncRNA) %>% .[, type := "lncRNA"],
+  melt(Promotoriai) %>% .[, type := "promoter"],
+  melt(enhanceriai_dt) %>% .[, type := "enhancers"],
+  melt(silenceriai_dt) %>% .[, type := "silencers"],
+  melt(CTCF_dt) %>% .[, type := "CTCF"],
+  melt(TE) %>% .[, type := "TE"])  %>% 
+   .[, variable := gsub("_met", "", variable)] %>% 
+  .[, variable := factor(variable, levels=names(cols_samples_RRBS))] %>% 
+  .[, type := factor(type, levels=c("All CpG", "genes", "lncRNA", "TE", "promoter", "enhancers", "CTCF", "silencers"))]
+
+saveRDS(tmp, paste0(outdatadir, "MetilinimasAntElementu.RDS"))
+
+ggplot(tmp, aes(type, value, fill=variable, coulour=variable)) +
+  geom_boxplot(outlier.shape=NA) +
+  theme_Publication() + 
+  ylab("Methylation %") +
+  theme(legend.position="bottom", 
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title.x = element_blank()) 
+
+```
+
+
+
+Fraction of CpGs that are covered by at least 5 reads in each genomic element by each sample. 
+
+```{r}
+dCG <- readRDS("/mnt/store/annotations/MusMusculus_mm10_Ensembl/CG_data_onC.RDS")
+seqlevelsStyle(dCG) <- "UCSC"
+mcols(dCG) <- NULL
+dCG <- dCG[strand(dCG) == "+"]
+mcols(dCG)$ID <- paste0(seqnames(dCG), "_", start(dCG),  "_", (start(dCG)+1))
+
+cov_gr_full <- total_cov %>%  
+  .[, chr := strsplit(ID, "_") %>% sapply(., `[`, 1)] %>% 
+  .[, start := strsplit(ID, "_") %>% sapply(., `[`, 2)] %>% 
+  .[, end := strsplit(ID, "_") %>% sapply(., `[`, 2)] %>% 
+  makeGRangesFromDataFrame(., keep.extra.columns=TRUE)
+
+get_CpG_per_elem <- function(samplas, cov_gr_full, elements2do) {
+ tmp <- foreach(i=elements2do, .combine="rbind") %do% {
+    total_CG <- sum(countOverlaps(dCG, anotacijos[grepl(i, mcols(anotacijos)$type)], ignore.strand=TRUE) > 0)
+    sample_CG <- sum(countOverlaps(cov_gr_full[elementMetadata(cov_gr_full)[, samplas] >= 5], anotacijos[grepl(i, mcols(anotacijos)$type)], ignore.stran=TRUE) > 0)
+    return(data.frame(total_CG, sample_CG, samplas, i))
+      }
+  return(tmp)
+}
+
+elements2do <- c("enhancers", "cpg_islands", "cpg_shelves", "cpg_shores", "genes_cds", "genes_5UTRs",  "genes_3UTRs", "genes_exons", "genes_firstexons", "genes_intergenic", "genes_introns", "genes_promoters")
+
+
+rezu <- foreach(i=paste0(samples2do, "_cov"), .combine="rbind") %do% {
+  get_CpG_per_elem(i, cov_gr_full, elements2do)
+}
+
+rezu %>% 
+  as.data.table() %>% 
+  .[, fraction := sample_CG/total_CG] %>% 
+  ggplot(aes(i, fraction, fill=samplas)) +
+    geom_col(position="dodge") +
+    theme_bw() +
+    ggtitle("Fraction of targeted CpGs") +
+    scale_fill_brewer(palette="Dark2", name="sample") +
+    theme(legend.position="bottom") +
+    coord_flip()          
+
+elements2do <- c("DNA", "LINE", "Low_complexity", "LTR", "RC", "Satellite", "Simple_repeat", "SINE", "Alu", "L1", "ERVK", "ERVL", "hAT", "L2", "MIR", "TcMar")
+
+rezu <- foreach(i=paste0(samples2do, "_cov"), .combine="rbind") %do% {
+  get_CpG_per_elem(i, cov_gr_full, elements2do)
+}
+
+rezu %>% 
+  as.data.table() %>% 
+  .[, fraction := sample_CG/total_CG] %>% 
+  ggplot(aes(i, fraction, fill=samplas)) +
+    geom_col(position="dodge") +
+    theme_bw() +
+    ggtitle("Fraction of targeted CpGs") +
+    scale_fill_brewer(palette="Dark2", name="sample") +
+    theme(legend.position="bottom") +
+    coord_flip()          
+
+```
+
+## CGI  
+
+Selecting CGI that seems to be highly methylated and then checking them in all samples. CGI were selected using average methylation per CGI (selected 5% of highest methylation CGI).
+Using only unmasked CpG islands and CG coverage of at least 5. 
+
+```{r}
+feat <- "mm10_cpg_islands"
+feat2do <- annotations[mcols(annotations)$type ==  feat]
+feat2do <- feat2do[countOverlaps(feat2do, met_gr) > 0]
+fo <- findOverlaps(feat2do, met_gr)
+
+d <- feat2do[queryHits(fo)]
+tmp <- cbind(mcols(feat2do[queryHits(fo)]), 
+  elementMetadata(met_gr[subjectHits(fo)])[,paste0(samples2do, "_met")])
+mcols(d) <- NULL
+mcols(d) <- tmp
+CGI_meth <- d %>% as.data.table() %>% .[, lapply(.SD, mean, na.rm=TRUE), by="id", .SDcols=paste0(samples2do, "_met")]
+
+dd <- foreach(i=names(CGI_meth)[-1]) %do% {
+  quant <- quantile(CGI_meth[, i, with=FALSE] %>% unlist, 0.95, na.rm=TRUE) 
+  CGI_meth[get(i) > quant, id] %>% 
+    as.data.table() %>% 
+    setnames(., "NR") %>% 
+    .[, sample := i] %>% 
+    .[]
+}
+names(dd) <- names(CGI_meth)[-1]
+```
+
+Variantas figurai: 
+
+CGI metilinimas suskaičiuotas kaip vidutinis CG metilinimas. NA (cov < 5) ignoruotos. Toliau atsirinktos tos CGI, kurių metilinimas didžiausias (jei vienam mėginy yra NA reikšmė, tai ta CGI nebus vertinama). 
+Tada paimta TOP2000 sekų (pagrindimo 2000 nėra) ir padarytas heatmap (heatmap spalvos atitinka vidutinį metilinimo lygį).  
+ 
+```{r}
+CGI <- annotations[mcols(annotations)$type == "mm10_cpg_islands"]
+gene_style_features <- c(annotations[mcols(annotations)$type == "mm10_genes_3UTRs"], 
+                         annotations[mcols(annotations)$type == "mm10_genes_5UTRs"], 
+                         annotations[mcols(annotations)$type == "mm10_genes_cds"], 
+                         annotations[mcols(annotations)$type == "mm10_genes_exons"], 
+                         annotations[mcols(annotations)$type == "mm10_genes_introns"], 
+                         annotations[mcols(annotations)$type == "mm10_proteinCoding"]
+) %>% reduce()
+
+mcols(CGI)$type[countOverlaps(CGI, gene_style_features) > 0 ] <- "genes"
+mcols(CGI)$type[countOverlaps(CGI, gene_style_features) == 0 ] <- "intergenic"
+mcols(CGI)$type[countOverlaps(CGI, annotations[mcols(annotations)$type == "mm10_EPDpromoters"]) > 0] <- "promoter" 
+
+fo <- findOverlaps(CGI, met_gr)
+CGI_met <- cbind(CGI[queryHits(fo)] %>% as.data.table() %>% .[, .(type, id)], 
+      met_gr[subjectHits(fo)] %>% as.data.table() %>% .[, c(met_samples, "ID"), with=FALSE]) %>% 
+      .[, c(met_samples, "id"), with=FALSE] %>% 
+      .[, lapply(.SD, mean, na.rm=TRUE), by="id"]
+
+CGI2do <- data.table(CGI_met$id, rowMeans(CGI_met[, met_samples, with=FALSE])) %>% 
+  setkey(., V2) %>% 
+  tail(.,  2000) %>% 
+  .[, V1]
+       
+tmp <- CGI_met[id %in% CGI2do, ] %>% 
+  merge(., (CGI %>% as.data.table() %>% .[, .(id, type)])) %>% 
+  .[]
+```
+
+```{r, fig.width=8, fig.height=7.5, res=350, dev="png", eval=TRUE}
+samp_level = c("A0D", "A2D", "A4D", "A8D")
+
+col_fun = colorRamp2(c(0, 50, 100),viridis(3))
+col_elem = structure(brewer.pal(n=3, "Dark2"), names=c("genes", "intergenic", "promoter"))
+
+d2plot <-  tmp[, c(met_samples, "type"), with=FALSE]
+colnames(d2plot) <- gsub("RRBS_", "", colnames(d2plot)) %>% gsub("_met", "", .)
+
+ha = HeatmapAnnotation(
+    sample = colnames(d2plot[, gsub("RRBS_|_met", "", met_samples), with=FALSE]),
+    col = list(sample = cols_samples_RRBS,
+    annotation_legend_param = list(
+        sample = list(direction = "horizontal", 
+                      at = samp_level,
+                      nrow = 1)
+              )       )
+)
+
+saveRDS(list(ha, d2plot[, gsub("RRBS_|_met", "", met_samples), with=FALSE], tmp$type, d2plot$type), paste0(outdatadir, "CGI_heatmap.RDS"))
+
+ht <- Heatmap(d2plot[, gsub("RRBS_|_met", "", met_samples), with=FALSE], 
+        name = "methylation", 
+        top_annotation = ha, 
+        col = col_fun, 
+        cluster_columns=FALSE,
+        row_split = tmp$type,
+        cluster_row_slices = FALSE,
+        row_title_rot = 0, 
+        row_title = NULL,
+        border = TRUE,
+        heatmap_legend_param = list(direction = "horizontal"),
+        width = unit(6, "cm") 
+        )  +
+      Heatmap(d2plot$type, width = unit(0.3, "cm"), col=col_elem, name="element")  
+
+draw(ht, 
+    heatmap_legend_side = "bottom", 
+    annotation_legend_side = "right")
+
+png(paste0(outdatadir, "CGI.png"), width=1000, height=3000, res=150)
+draw(ht, 
+    heatmap_legend_side = "bottom", 
+    annotation_legend_side = "right")
+dev.off()    
+```
+
+
+
+
+
+
+
+Jaccard of identified CGIs 
+
+```{r}
+foreach(i=names(dd), .combine="rbind") %do% {
+  foreach(j=names(dd), .combine="rbind") %do%  {
+    data.table(JC=length(intersect(dd[[i]][, NR], dd[[j]][, NR])) / length(union(dd[[i]][, NR], dd[[j]][, NR])), samp1=i, samp2=j)    
+  }
+} %>% 
+  ggplot(aes(samp1, samp2, fill=JC, label=round(JC, 2))) + 
+    geom_tile(colour="black") +
+    geom_text() +
+    theme_bw() +
+    scale_fill_viridis(limits=c(0, 1)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+saveRDS(dd, paste0(outdatadir, "SelectedCGI.RDS"))
+```
+
+```{r}
+tmp <- rbindlist(dd) %>% .[, NR] %>% unique
+temp <- CGI_meth[id %in% tmp, -1]
+temp[is.na(temp)] <- 0
+Heatmap(temp)
+```

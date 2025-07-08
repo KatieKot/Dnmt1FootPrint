@@ -1,0 +1,145 @@
+# Info
+
+Visi duomenys sukelti: 
+
+http://genome.ucsc.edu/cgi-bin/hgTracks?db=mm10&hubUrl=http://preila.ibt.lt/GVhub/hub.txt
+
+
+Į atskirus takelius sukelti atskiri biologiniai duomenys. WGBS/RRBS yra tik po vieną repliką, bet juose turime dvejopo tipo duomenis: arba pilną signalą, arba signalą, gautą iš CG, kurie buvo padengti bent 5 nuskaitymais (šie duomenys naudoti daugeliui grafikų). 
+
+TOP duomenų atveju dažnu atveju irgi yra po du rinkinius: vienas yra pilnas (absoliučiai visi duomenys), o antrame yra sudėti tik tie duomenys, kurie nesidengė su kontrolėmis. Pirmieji įprastai turės prierašą "Orig". Taip pat TOP duomenų atveju yra atskirai sudėtos tiek replikos, tiek ir mėginys iš sumuotų replikų. 
+
+## Update 07 08
+
+Clustering_selected (DNMT_2) - pridėti xlsx failai atsisiuntimui.
+
+
+## Update 05 15
+
+Profiles (WGBS -> profiles)
+
+Pridėti ChIP.  
+Padaryta tiek grupės pagal hetero, tiek pagal homo   
+Sutvarkytos skalės ChIPSeq (homo buvo mažesnis mėginys ir dėl to skaičiai mažesni gaudavosi). 
+
+
+## Update 04 15
+
+NiceFigures pridėta pagal laišką density, porą tikslinių CGI, daug profiliukų (padubliuota su WGBS_RRBS/Profiles dalimi), CGI heatmap'as su WGBS/RRBS/TopSeq ir homo/hetero. 
+
+Trūksta: profiliukų su ChIP.
+
+## Update 03 18   
+Fibroblastuose pridėti PCA kai imu per elementą (bin'ą) taikinių kiekį ir tuomet dar pareikalauju, kad būtų ne mažiau negu X taikinių bei tai atsikartotų visose replikose. 
+NiceFigure_1 atskirti heatmaps (nes ilgai darosi ir atsibosta laukti). Pridėti heatmaps ir profiliai repeatams. 
+
+
+## Update 03 13   
+Fibroblastuose ieškota tiesos per skirtingus threshold ir naudojant skirtingus elementus 
+NiceFigures -> Figure1 pridėtas metilinimas per chromosomas naudojant boxplot. 
+
+
+
+## Update 02 18  
+Pridėti DMR fibroblastam  (tik RRBS kol kas): GO ir lentelė  
+Pridėti DMR Dnmt2 (tik RRBS kol kas): GO ir lentelė  
+
+
+## Update 02 02
+
+and density grafikų uždėjau koreliacijas ir patikimumus (WGBS_RRBS/CorAnalysis )
+prie buvusių boxplot pridėjau violin plot (abu viename grafike) (WGBS_RRBS/CorAnalysis -> Coverage III)  
+Pridėjau CG lygio density tarp Het ir Hom (Dnmt-seq).  (WGBS_RRBS/CorAnalysis -> TopSeq II)
+Pridėjau binų density tarp Het ir Hom (WGBS_RRBS/CorAnalysis -> TopSeq II)  
+Pridėjau promotorių klasterius (Dnmt_2 -> Clustering)
+
+
+
+
+## Update 01 31
+
+Dnmt2 klasteriu paieska - padaryta daugiau GO.   
+Dnmt2 klasteriu paieska - pridėti klasterių dydžiai (tiek teoriniai, tiek tai, kas naudota GO)   
+Dnmt2 klasteriai padaryti enhanceriai, bet neaišku, ką ten toliau veikti :)    
+
+WGBS vs RRRB padarytos koreliacijos naudojantis CG coverage duomenimis (tiek bendrai, tiek per elementus).   
+WGBS vs RRRB pataisyti visokie density grafikai (kur buvo daug outliers)   
+WGBS vs RRRB pridėtas density tarp TopSeq hetero ir homo. 
+
+
+## Update 12 13
+
+Atnaujintas UCSC - sudėti visi duomenys.   
+Figure 2 minimalūs patvarkymai  
+Padaryti CGI klasteriai (Dnmt2) ir pagal kitimo šabloną padaryti GO  
+Visokie smulkūs tvarkymai pagal susirašinėjimus/aptarimus   
+NEPADARYTA:  koreliacijos naudojantis CG coverage duomenimis 
+
+## Update 11 28
+
+Pakeistas WGBS profilių išdėstymas   
+Pridėtos koreliacijos (čia jau biški seniau)  
+Pradėta daryti Figure 2   
+Pakoreguoti enrichment (pakeisti elementai, pašalintas WT signalas iš visų mėginių)  
+Performatuotas promotorių enrichment (vaizduojami tik bendri ir kitu formatu)  
+Pridėta koreliacija ant elementų  
+
+
+## Update 11 10 
+Tvarkingiau sudėlioti puslapiai  
+Pašalinti kai kurie Heatmaps, nes jų labai daug 
+Pridėti promotorių enrichment (imti tie promotoriai, kur turi salas ir salos pagautos visose replikose)  
+Pridėti enrichment per genominius elementus/repeatus  
+
+## Update 10 25  
+NiceFigs perkeltas į atskirą folderį ir pervadintas į Figure_1.  
+Pridėti Figure_1 profiliukai pseudogene ir pan.  
+Kiti smulkūs pataisymai pagal laišką. 
+
+
+## Update 10 23
+Pridėti RRBS iš ESC (4 laiko taškai) heatmap, profiliai ir kai kurios analizės. 
+3D PCA pridėta 
+
+
+## Update 09 29
+Density paprasti - padarytas perdengimas.   
+2d density - pakeista spalvų schema ir pridėta įstrižainė, kurios poreikis abejotinas   
+GeneBody profiliukai - pastorintos linijos  
+Dėl apsiverčianio pasiskirstymo per elementus (du heatmap) - ten viskas yra ok. kur yra geltonai-mėlynas heatmap, tai ten yra parinktos stipriausiai metilintos salos ir paimta 2000 tokių sekų. Ten gaunasi, kad daugiausiai stipriai metilintų CGI yra ant genų. Heatmap su profiliais yra imtos visos salos. Ir jei žvelgiam apskritai, tai didžioji dalis CGI dengiasi su promotoriais, o ne genais. 
+violinto plot siaurinti boxplot ir medianą kaip maždaug tašką piešti    
+Heatmap (complex ir enriched) - padaryti su superenhanceriais 
+Heatmap (complex ir enriched) - padaryti su silenceriais 
+Heatmap (complex ir enriched) - padaryti su insuliatoriais   
+Metilinimas per elementus (boxplot) - ismesti CGI. Prideti silencerius ir insuliatorius (CTCF)  
+Heatmap (complex ir enriched) - padaryti su enhanceriais (poised ir active)  
+
+
+## Update 09 25 
+
+RRBS scatter plot nuimti taškai - padarytas tiesiog density be taškų.   
+Smulkūs legendų ir ašių patvarkymai.  
+CGI heatmap padalintas į dalis.  
+
+## ToDo 07.26
+
+Done:  
+1.  Kur chromosomų coverage - pridėti taikinių kiekį per procentus. - DONE  
+2.  Pažiūrėti koreliacijas tarp elementų - 2i koreliacijos vertė keistai didelė - DONE  
+3.  Pridėti LTR, LINE ir pan.  - DONE. Neigiamos koreliacijos dėl to, kad imami tik nenuliniai elementai ir ten taip gaunasi. Su nuliniais bus teigiama/apie nuli (visu netestavau). Dabar panasinau ir vel.   
+4.  Padidinti grafikus, kur yra CpG dalis/coverage  - DONE  
+5.  Enrichment GO - lentelės su kievieno rezultatais plius bendras grafikas iš bendrų.  - Lentele DONE
+6.  Enrichment per elementus - mesti lauk 2i - DONE   
+8.  Kur yra profiliai - vienoda Y ašis  - DONE   
+10. EnrichedHeatmap - padaryti bendrą iš RRBS ir TopSeq  - DONE   
+14. Fibroblastai - išmesti kontrolę   - DONE   
+8.  Mixed heatmap surikiuoti pagal RRBS galutini megini. 
+3.  EnrichedHeatmap - atskirti stiprias salas ir jom atskirai  
+
+Not Done: 
+
+1.  Enrichment per elementus - surasti diferentinius 
+2.  Stipriai modifikuotos salos - padaryti GO 
+6.  Atskiras parodymas, kiek Dnmt-seq atitinka WGBS/RRBS
+
+

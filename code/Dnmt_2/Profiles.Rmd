@@ -1,0 +1,305 @@
+```{r}
+library(pacman)
+p_load(data.table, dplyr, ggplot2, rtracklayer, RColorBrewer, scales, foreach, GenomicRanges,
+viridis, annotatr, stringr, GGally, EnrichedHeatmap, circlize, corrplot, patchwork, splines)
+options(scipen=999)
+knitr::opts_chunk$set(fig.width=9, fig.height=7)
+dir.create(outdatadir, recursive=TRUE)
+source("./code/common.R")
+
+get_barplot_topSeq <- function(pos2do, coverages_gr_rep, namas, samples2do, colSamples, samplesOrder, ymaxas) {
+  samplesInfo <- samples2do %>% 
+    as.data.table() %>% 
+    setnames(., "rep") %>% 
+    .[, samplas := gsub("_R.", "", rep)] %>% 
+    .[]
+
+  d <- foreach(i=unique(samplesInfo$samplas), .combine="rbind") %do% {
+    tmp_cov <- coverages_gr_rep[queryHits(findOverlaps(coverages_gr_rep, pos2do))]
+    vidurkiai <- tmp_cov %>% 
+      as.data.table() %>% 
+      .[, samplesInfo[samplas == i, rep], with=FALSE] %>% 
+      rowMeans
+    nuokrypiai <- tmp_cov %>% 
+      as.data.table() %>% 
+      .[, samplesInfo[samplas == i, rep], with=FALSE] %>% 
+      apply(., 1, sd)
+    data.table(meanas=vidurkiai, nuokrypiai, meginys=i, pos=paste0("pos", 1:length(vidurkiai))) %>% 
+      .[, pos := factor(pos, levels=paste0("pos", 1:length(vidurkiai)))] %>% 
+      .[] 
+  }
+
+  temp <- d %>% as.data.table() %>% 
+      .[, apacia := meanas - (nuokrypiai/2)] %>% 
+      .[, virsus := meanas + (nuokrypiai/2)] %>%  
+      .[, meginys := factor(meginys, levels=samplesOrder)] 
+  fig <- ggplot(temp, aes(pos, meanas, fill=meginys)) +
+        geom_col() +
+        geom_errorbar(aes(ymin = apacia, ymax = virsus), width = 0.2) +
+        theme_bw() +
+        ylab("Modified CpGs, reads") +
+        facet_wrap(~meginys, ncol=1, scales="free_y") +
+        theme_Publication() +    
+        ylim(c(0, ymaxas)) +
+        theme(axis.ticks.x = element_blank(), 
+                panel.border = element_blank(), 
+                #panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank(), 
+                axis.line = element_line(colour = "black"),
+                strip.text = element_text(colour = 'black'),
+                #strip.background =element_rect(fill=NA),
+                strip.background = element_blank(),
+                legend.position="bottom",
+                axis.title.x = element_blank(),
+                axis.text.x = element_blank()
+                ) +
+        geom_smooth(aes(group="1"), 
+                se=F,
+                method="glm",
+                formula=y~ns(x, 6),
+                #family=gaussian(link="log"),
+                method.args = list(family = "gaussian"),
+                show_guide = FALSE, 
+                lwd=0.7) +     
+       scale_fill_manual(values = colSamples, name="Sample") +                       
+      ggtitle(namas)                                
+  return(list(fig, temp))                        
+} 
+cols_samplesLong  <- c("A0D_met"="#ffc800",
+                       "A2D_met"="#ff9600",
+                       "A4D_met"="#ff6400",
+                       "A8D_met"="#ff0000",
+                       "D0azide"="#ffc800",
+                       "D2azide"="#ff9600",
+                       "D4azide"="#ff6400",
+                       "D8azide"="#ff0000"
+                        )
+```
+
+# Profiles {.tabset}  
+
+BlackListed regions are present/counted. 
+ 
+```{r}
+samples2do_BS <- c("A0D_met", "A2D_met", "A4D_met", "A8D_met")
+samples2do_TOP <- c("D0azide", "D2azide", "D4azide", "D8azide") 
+coverages <- readRDS("./output/code/PrepAllData/diferenciacija_coverages2useTopData.RDS")
+coverages_full <- coverages %>% 
+  .[, end := start] %>% 
+  .[chr %in% paste0("chr", c(1:19, "X", "Y"))] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+coverages <- coverages %>% 
+  .[D0azide>0, D0azide := 1] %>% 
+  .[D2azide>0, D2azide := 1] %>% 
+  .[D4azide>0, D4azide := 1] %>% 
+  .[D8azide>0, D8azide := 1] %>% 
+  .[, end := start] %>% 
+  .[, c("chr", "start", "end", samples2do_TOP), with=FALSE] %>% 
+  .[chr %in% paste0("chr", c(1:19, "X", "Y"))] %>% 
+  makeGRangesFromDataFrame(., keep.extra.column=TRUE)
+
+tmp <- readRDS(paste0("output/code/PrepAllData//dAnnotations.RDS"))
+repeatai <- tmp[["repeatai"]]
+mcols(repeatai)$type <- paste0(mcols(repeatai)$Name, "_", mcols(repeatai)$Class, "_", mcols(repeatai)$Familly)
+annotations <- tmp[["anotacijos"]]
+annotations <- annotations[seqnames(annotations) %in% paste0("chr", c(1:19, "X", "Y"))]
+anotacijos <- c(annotations, repeatai)
+
+tmp <- readRDS(paste0("output/code/PrepAllData//differentiations_RRBS.RDS"))
+met_gr <- tmp[["methylation_gr_th"]]
+met_gr <- met_gr[seqnames(met_gr) %in% paste0("chr", c(1:19, "X", "Y"))]
+
+rm(tmp)
+gc()
+```
+
+```{r}
+ext_target <- function(x){
+  upai <- x[grepl("u", x$V1)]
+  targetai <- x[grepl("t", x$V1)]
+  targ_mod <- rbind(targetai, targetai) %>% .[, nr := gsub("t", "", V1) %>% as.numeric] %>% setkey(., nr) %>% .[, nr := NULL] %>% .[, V1 := paste0("t", 1:.N)] %>% .[]
+  downai <- x[grepl("d", x$V1)]
+  return(rbind(upai, targ_mod, downai))
+}
+
+get_profile <- function(BS_data, TOP_data, feat2do, vardas) {
+  if(!(file.exists(paste0(outdatadir, vardas, "_profile.RDS")))) {
+    extend <- 4000
+    mat1 <- normalizeToMatrix(BS_data, feat2do, value_column = "A0D_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100))
+    mat2 <- normalizeToMatrix(BS_data, feat2do, value_column = "A2D_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100))
+    mat3 <- normalizeToMatrix(BS_data, feat2do, value_column = "A4D_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100))
+    mat4 <- normalizeToMatrix(BS_data, feat2do, value_column = "A8D_met", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 100))
+    mat5 <- normalizeToMatrix(TOP_data, feat2do, value_column = "D0azide", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 1))
+    mat6 <- normalizeToMatrix(TOP_data, feat2do, value_column = "D2azide", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 1))
+    mat7 <- normalizeToMatrix(TOP_data, feat2do, value_column = "D4azide", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 1))
+    mat8 <- normalizeToMatrix(TOP_data, feat2do, value_column = "D8azide", mean_mode = "absolute",
+            extend = extend, background = NA, smooth = FALSE, target_ratio = 0.3, limit=c(0, 1))            
+    saveRDS(list(mat1, mat2, mat3, mat4, mat5, mat6, mat7, mat8), paste0(outdatadir, vardas, "_profile.RDS"))
+    } else {
+    tmp <- readRDS(paste0(outdatadir, vardas, "_profile.RDS"))
+    mat1 <- tmp[[1]]
+    mat2 <- tmp[[2]]
+    mat3 <- tmp[[3]]
+    mat4 <- tmp[[4]]
+    mat5 <- tmp[[5]]
+    mat6 <- tmp[[6]]
+    mat7 <- tmp[[7]]
+    mat8 <- tmp[[8]]
+    }
+  row_tvarka <- as.data.table(colMeans(mat1[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target() %>% .[, V1]
+
+  df <- rbind(
+    as.data.table(colMeans(mat1[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target() %>% .[, sample := samples2do_BS[1]],
+    as.data.table(colMeans(mat2[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target()%>% .[, sample := samples2do_BS[2]],
+    as.data.table(colMeans(mat3[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target() %>% .[, sample := samples2do_BS[3]],
+    as.data.table(colMeans(mat4[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target()%>% .[, sample := samples2do_BS[4]],
+    as.data.table(colMeans(mat5[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target()%>% .[, sample := samples2do_TOP[1]] %>% .[, V2 := V2 * 100], 
+    as.data.table(colMeans(mat6[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target()%>% .[, sample := samples2do_TOP[2]] %>% .[, V2 := V2 * 100], 
+    as.data.table(colMeans(mat7[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target()%>% .[, sample := samples2do_TOP[3]] %>% .[, V2 := V2 * 100], 
+    as.data.table(colMeans(mat8[,], na.rm=TRUE), keep.rownames=TRUE) %>% ext_target() %>% .[, sample := samples2do_TOP[4]] %>% .[, V2 := V2 * 100]
+    ) %>% 
+    as.data.table() %>% 
+    .[, V1 := factor(V1, levels=row_tvarka)] %>% 
+    .[, element := vardas]  
+  return(df)
+}
+
+temp <- rbind(
+  get_profile(met_gr, coverages, annotations[annotations$type == "mm10_transcriptsCoding"], "transcripts"),
+  get_profile(met_gr, coverages, annotations[annotations$type == "mm10_lncrna_gencode"], "lncRNA"),
+  get_profile(met_gr, coverages, annotations[annotations$type == "mm10_processedPseudogene"], "procPseudoGene"),
+  get_profile(met_gr, coverages, annotations[annotations$type == "mm10_UnProcessedPseudogene"], "unProcPseudoGene"),
+  get_profile(met_gr, coverages, annotations[annotations$type == "mm10_ActiveEnhancers_Atlas"], "ActiveEnhancerAtlas"),
+  get_profile(met_gr, coverages, annotations[annotations$type == "mm10_PoisedEnhancers_Atlas"], "PoisedEnhacerAtlas"),
+  get_profile(met_gr, coverages, annotations[annotations$type == "mm10_ActiveEnhancers_fantom"], "ActiveEnhancerFantom"),
+  get_profile(met_gr, coverages, annotations[annotations$type == "mm10_PoisedEnhancers_fantom"], "PoisedEnhacerFantom"),
+  get_profile(met_gr, coverages, annotations[annotations$type == "mm10_superEnhancer"], "superEnhacner"),
+  get_profile(met_gr, coverages, annotations[annotations$type == "mm10_EPDpromoters"], "Promoters"),
+  get_profile(met_gr, coverages, annotations[annotations$type == "mm10_EPDpromotersNC"], "PromotersNonCode"),
+  get_profile(met_gr, coverages, annotations[annotations$type == "mm10_Silencer_E14"], "silencers_E14"),
+  get_profile(met_gr, coverages, annotations[annotations$type == "mm10_Silencer_mESC"], "silencer_mESC")
+)
+
+
+if(!file.exists( paste0(outdatadir, paste0("Profiles_matrix_repeats.RDS")))) {
+  set.seed(1234)
+  LINEs <- repeatai[mcols(repeatai)$Class == "LINE"] %>% sample(5000, )
+  set.seed(1234)
+  SINEs <- repeatai[mcols(repeatai)$Class == "SINE"] %>% sample(5000, )
+  set.seed(1234)
+  LTR <- repeatai[mcols(repeatai)$Class == "LTR"] %>% sample(5000, )
+  set.seed(1234)
+  DNA <- repeatai[mcols(repeatai)$Class == "DNA"] %>% sample(5000, ) 
+  set.seed(1234)
+  Satellite  <- repeatai[mcols(repeatai)$Class == "Satellite"] %>% sample(5000, )
+  set.seed(1234)
+  Simple_repeat <- repeatai[mcols(repeatai)$Class == "Simple_repeat"] %>% sample(5000, )
+
+  temp_reps<- rbind(
+    get_profile(met_gr, coverages, LINEs, "LINE"),
+    get_profile(met_gr, coverages, SINEs, "SINE"),
+    get_profile(met_gr, coverages, LTR, "LTR"),
+    get_profile(met_gr, coverages, DNA, "DNA"),
+    get_profile(met_gr, coverages, Satellite, "Satellite"),
+    get_profile(met_gr, coverages, Simple_repeat, "Simple_repeat")
+  )
+  saveRDS(temp_reps, paste0(outdatadir, paste0("Profiles_matrix_repeats.RDS"))) } else {
+    temp_reps <- readRDS(paste0(outdatadir, paste0("Profiles_matrix_repeats.RDS")))
+  }
+```
+
+## On elements
+
+```{r, fig.width=6, fig.height=15}
+temp %>% 
+  .[, technology := "TopSeq"] %>% 
+  .[grepl("met", sample), technology := "RRBS"] %>% 
+  .[, samplas := sample] %>% 
+  ggplot(aes(V1, V2, group=samplas, colour=samplas)) +
+    geom_line(size=0.5, alpha=0.75, lwd=1.25) +
+    theme_Publication() +
+    theme_bw() +
+    ylab("Methylation/TopSeq*100") +
+    theme(axis.title.x=element_blank(), 
+          legend.position="bottom",
+          panel.grid.major=element_blank(),
+          panel.background=element_blank()
+         ) +
+    coord_cartesian(ylim=c(0, 100)) +
+    scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
+    scale_colour_manual(values = cols_samplesLong) +
+    facet_grid(vars(element), vars(technology)) +
+    geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
+    geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
+```
+
+
+```{r, fig.width=8, fig.height=12}
+temp_reps %>% 
+  .[, technology := "TopSeq"] %>% 
+  .[grepl("met", sample), technology := "RRBS"] %>% 
+  .[, samplas := sample] %>% 
+  ggplot(aes(V1, V2, group=samplas, colour=samplas)) +
+    geom_line(size=0.5, alpha=0.75, lwd=1.25) +
+    theme_Publication() +
+    theme_bw() +
+    ylab("Methylation/TopSeq*100") +
+    theme(axis.title.x=element_blank(), 
+          legend.position="bottom",
+          panel.grid.major=element_blank(),
+          panel.background=element_blank()
+         ) +
+    coord_cartesian(ylim=c(0, 100)) +
+    scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
+    scale_colour_manual(values = cols_samplesLong) +
+    facet_grid(vars(element), vars(technology)) +
+    geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
+    geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
+```
+
+
+
+## Specific CGI 
+
+
+```{r}
+p1 <- get_barPlot_bisulfite(makeGRangesFromDataFrame(data.frame(chr="chr11", start=3192997-1, end=3193699+1)), met_gr, "Sfi1", samples2do_BS, cols_samples_RRBS, samples2do_BS)
+
+p2 <- get_barPlot_bisulfite(makeGRangesFromDataFrame(data.frame(chr="chr15", start=98256832-1, end=98257066+1)), met_gr, "H1fnt", samples2do_BS, cols_samples_RRBS, samples2do_BS)
+
+(p1 | p2)  + plot_layout(guides = "collect", widths = c(2, 1)) & theme(legend.position = 'bottom')
+```
+
+Skirtumas tarp WT ir hetero poros bei atskirai homo ir KO. 
+
+```{r}
+p1 <- do_dif(makeGRangesFromDataFrame(data.frame(chr="chr11", start=3192997-1, end=3193699+1)), met_gr, "Sfi1. A0 - A2", "A0D_met", "A2D_met")
+
+p2 <- do_dif(makeGRangesFromDataFrame(data.frame(chr="chr11", start=3192997-1, end=3193699+1)), met_gr, "Sfi1. A4 - A8", "A4D_met", "A8D_met")
+
+p3 <- do_dif(makeGRangesFromDataFrame(data.frame(chr="chr15", start=98256832-1, end=98257066+1)), met_gr, "H1fnt. A0 - A2", "A0D_met", "A2D_met")
+
+p4 <- do_dif(makeGRangesFromDataFrame(data.frame(chr="chr15", start=98256832-1, end=98257066+1)), met_gr, "H1fnt. A4 - A8", "A4D_met", "A8D_met")
+
+(p1 | p2) / (p3 | p4)  + plot_layout(guides = "collect", widths = c(2, 1)) & theme(legend.position = 'bottom')
+
+```
+
+
+
+```{r}
+all_TOP <- c("D0azide_R1", "D0azide_R2", "D2azide_R1", "D2azide_R2", "D4azide_R1", "D4azide_R2", "D8azide_R1", "D8azide_R2")
+p1 <- get_barplot_topSeq(makeGRangesFromDataFrame(data.frame(chr="chr11", start=3192997-1, end=3193699+1)), coverages_full, "Sfi1", all_TOP, cols_samples_4taskai_TOP, samples2do_TOP, 125)
+p2 <- get_barplot_topSeq(makeGRangesFromDataFrame(data.frame(chr="chr15", start=98256832-1, end=98257066+1)), coverages_full, "H1fnt", all_TOP, cols_samples_4taskai_TOP, samples2do_TOP, 20)
+
+(p1[[1]] | p2[[1]])   + plot_layout(guides = "collect", widths = c(2, 1)) & theme(legend.position = 'bottom')
+saveRDS(list(p1[[2]], p2[[2]]), paste0(outdatadir, "TopSeq_selCGI.RDS"))
+```

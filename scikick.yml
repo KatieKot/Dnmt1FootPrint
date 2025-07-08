@@ -1,0 +1,71 @@
+### Scikick Project Workflow Configuration File
+
+# Directory where Scikick will store all standard notebook outputs
+reportdir: report
+
+# --- Content below here is best modified by using the Scikick CLI ---
+
+# Notebook Execution Configuration (format summarized below)
+# analysis:
+#  first_notebook.Rmd:
+#  second_notebook.Rmd: 
+#  - first_notebook.Rmd 	# must execute before second_notebook.Rmd
+#  - functions.R 	        # file is used by second_notebook.Rmd
+#
+# Each analysis item is executed to generate md and html files, E.g.:
+# 1. <reportdir>/out_md/first_notebook.md
+# 2. <reportdir>/out_html/first_notebook.html
+analysis: !!omap
+- code/index.Rmd:
+- code/PrepAllData.Rmd:
+- code/WGBS_RRBS/WGBS_stat.Rmd:
+  - code/PrepAllData.Rmd
+- code/WGBS_RRBS/TOP_Stat.Rmd:
+  - code/PrepAllData.Rmd
+- code/WGBS_RRBS/Profiles.Rmd:
+  - code/PrepAllData.Rmd
+- code/WGBS_RRBS/Enrichment.Rmd:
+  - code/PrepAllData.Rmd
+- code/WGBS_RRBS/CorAnalysis.Rmd:
+  - code/PrepAllData.Rmd
+- code/WGBS_RRBS/Profiles_withThreshold.Rmd:
+  - code/PrepAllData.Rmd
+- code/WGBS_RRBS/Add05.Rmd:
+  - code/PrepAllData.Rmd
+######################################################  
+- code/Dnmt_2/TOP_Stat.Rmd:
+  - code/PrepAllData.Rmd
+- code/Dnmt_2/RRBS_Stat.Rmd:
+  - code/PrepAllData.Rmd
+- code/Dnmt_2/Enrichment.Rmd:
+  - code/PrepAllData.Rmd
+- code/Dnmt_2/Profiles.Rmd:
+  - code/PrepAllData.Rmd
+- code/Dnmt_2/Profiles_withThreshold.Rmd:
+  - code/PrepAllData.Rmd
+- code/Dnmt_2/Clustering_Selected.Rmd:
+  - code/PrepAllData.Rmd
+- code/Dnmt_2/Heatmaps.Rmd:
+  - code/PrepAllData.Rmd
+- code/Dnmt_2/DensityPlots.Rmd:
+  - code/PrepAllData.Rmd
+#######################################################
+- code/NiceFigures/Figure_1.Rmd:
+  - code/PrepAllData.Rmd
+  - code/WGBS_RRBS/TOP_Stat.Rmd
+- code/NiceFigures/Figure_2.Rmd:
+  - code/WGBS_RRBS/TOP_Stat.Rmd
+  - code/Dnmt_2/GetDist2CG.Rmd
+  - code/WGBS_RRBS/Profiles.Rmd
+- code/NiceFigures/Figure_3.Rmd:
+  - code/PrepAllData.Rmd
+- code/NiceFigures/Figure_1_heatmaps.Rmd:
+  - code/PrepAllData.Rmd
+- code/NiceFigures/Figure_2_heatmaps.Rmd:
+  - code/PrepAllData.Rmd
+- code/NiceFigures/Figure_4.Rmd:
+  - code/WGBS_RRBS/Add05.Rmd
+version_info:
+  snakemake: 5.22.1
+  ruamel.yaml: 0.18.14
+  scikick: 0.2.1
