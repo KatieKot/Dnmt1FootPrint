@@ -36,7 +36,6 @@ Usefull reads number, number of targets, mean/median coverage, distance to targe
 
 Number of reads (only reads that were assigned to targets counted).
 ```{r}
-# nuskaitymu skaicius 
 coverages[, samples2do, with=FALSE] %>% 
   colSums() %>% 
   as.data.frame() %>% 
@@ -219,7 +218,6 @@ atstumai %>% as.data.table() %>%
   ggplot(aes(grupe, N, group=name, color=name)) +
     geom_point() +
     geom_line() +
-    #geom_col(position="dodge") +
     theme_bw() +
     facet_wrap(~name, scales="free") +
     ylab("Number of reads") +
@@ -277,8 +275,6 @@ ggplot(tmp, aes(chr, coverage, fill=sample)) +
 
 saveRDS(tmp, paste0(outdatadir, "data_perChromCoverage.RDS"))
 
-# Taikiniu frakcija
-
 tmp <- foreach(i=samples2do_m, .combine="rbind") %do% {
   coverages[, c("chr", i), with=FALSE] %>% 
     .[get(i) > 0, chr] %>% 
@@ -309,7 +305,6 @@ ggplot(tmp, aes(chr, frakcija, fill=sample)) +
 
 Correlations (using bins of 2kb). Targets number per bin used here. 
 
-
 ```{r}
 suma_2 <- function(x){sum(x>0, na.rm=TRUE)}
 bin_size <- 2000
@@ -335,7 +330,7 @@ Heatmap(tmp, name="pearson",
           show_row_names=FALSE,
           show_column_names=TRUE,
           column_title = "Pearson correlation on bins",
-          cell_fun = function(j, i, x, y, w, h, col) { # add text to each grid
+          cell_fun = function(j, i, x, y, w, h, col) { 
           grid.text(round(tmp[i, j], 2), x, y)}
           )
 saveRDS(list(tmp, column_ha, row_ha), paste0(outdatadir, "data_heatmapCor.RDS"))
@@ -351,7 +346,7 @@ Heatmap(tmp, name="pearson",
           show_row_names=FALSE,
           show_column_names=TRUE,
           column_title = "Pearson correlation on bins",
-          cell_fun = function(j, i, x, y, w, h, col) { # add text to each grid
+          cell_fun = function(j, i, x, y, w, h, col) { 
           grid.text(round(tmp[i, j], 2), x, y)}
           )
 
@@ -386,7 +381,7 @@ Heatmap(tmp_table, name="Jaccard",
           show_row_names=FALSE,
           show_column_names=TRUE,
           column_title = "Jaccard on bins",
-          cell_fun = function(j, i, x, y, w, h, col) { # add text to each grid
+          cell_fun = function(j, i, x, y, w, h, col) { 
           grid.text(round(tmp_table[i, j], 2), x, y)}
           )
 ```
@@ -476,7 +471,6 @@ About the question marks: "The rules for assigning question marks are arbitrary;
 match shows a 2-fold lower or a 1.5-fold higher divergence level as expected for a repeat at the boundary."
 
 ```{r, fig.height=9}
-#promotoriai 
 tmp <- readRDS(paste0("output/code/PrepAllData//dAnnotations.RDS"))
 repeatai <- tmp[["repeatai"]]
 mcols(repeatai)$type <- paste0(mcols(repeatai)$Name, "_", mcols(repeatai)$Class, "_", mcols(repeatai)$Familly)
@@ -489,10 +483,7 @@ coverages_gr <- coverages %>%
 
 feat2do_genes <- c("mm10_cpg_islands", "mm10_CTCF", "mm10_EPDpromotersNC", "mm10_genes_3UTRs", "mm10_genes_cds", "mm10_genes_firstexons", "mm10_genes_introns", "mm10_lncrna_gencode", "mm10_PoisedEnhancers_Atlas", "mm10_processedPseudogene", "mm10_Silencer_E14", "mm10_superEnhancer", "mm10_EPDpromoters", "mm10_Silencer_mESC", "mm10_transcriptsCoding")
 
-############################# Prideta dalis tam, kad suvienodinti su enrichment analize 
 gff <- import("/mnt/store/annotations/MusMusculus_mm10_Ensembl/ENCODE/gencode.vM23.annotation.gtf")
-
-# darom nauja anotacija 
 
 tmp <- annotations[mcols(annotations)$type == "mm10_genes_3UTRs"]
 mcols(tmp)$type <- "3UTRs"
@@ -572,9 +563,6 @@ feat2do_genes <- c("3UTRs", "5UTRs", "lncRNA_gencode", "exons", "introns", "prom
 suma <- function(x) {sum(x>0, na.rm=TRUE)}
 
 frakcijos_gen <- foreach(i=feat2do_genes, .combine="rbind") %do% {
-  # kiek procentu CG pagavom 
-  # koks vidutinis modifikavimas
-  #i <- "LINE"
   elementai <- tmp_annotations[mcols(tmp_annotations)$type == i] %>% reduce
   nCG <- countOverlaps(coverages_gr, elementai) %>% sum
   frakcija <- foreach(j=samples2do_m, .combine="c") %do% {
@@ -586,9 +574,7 @@ frakcijos_gen <- foreach(i=feat2do_genes, .combine="rbind") %do% {
 rownames(frakcijos_gen) <- feat2do_genes
 
 coveragas_gen <- foreach(i=feat2do_genes, .combine="rbind") %do% {
-  # kiek procentu CG pagavom 
-  # koks vidutinis modifikavimas
-  #i <- "LINE"
+
   elementai <- tmp_annotations[mcols(tmp_annotations)$type == i] %>% reduce
   nCG <- countOverlaps(coverages_gr, elementai) %>% sum
  
@@ -640,7 +626,6 @@ p3 <- coveragas_gen %>%
 ``` 
 
 ```{r, fig.height=9}
-# Prideta tam, kad suvienodinti su enrichment 
 tmp <- repeatai[mcols(repeatai)$Class == "DNA"]
 mcols(tmp) <- NULL
 mcols(tmp)$type <- "DNA"
@@ -680,12 +665,8 @@ tmp_annotations <- c(tmp_annotations, tmp)
 reps2do <- c("DNA", "SINE", "LINE", "LTR", "Simples", "Satellite", "Low_complexity")
 
 suma <- function(x) {sum(x>0)}
-#reps2do <- mcols(repeatai)$Class %>% unique
 
 frakcijos_rep <- foreach(i=reps2do, .combine="rbind") %do% {
-  # kiek procentu CG pagavom 
-  # koks vidutinis modifikavimas
-  #i <- "LINE"
   elementai <- tmp_annotations[tmp_annotations$type == i] %>% reduce
   nCG <- countOverlaps(coverages_gr, elementai) %>% sum
   frakcija <- foreach(j=samples2do_m, .combine="c") %do% {
@@ -715,9 +696,6 @@ p2 <- frakcijos_rep %>%
     ggtitle("Repeats elements. Target fraction")
 
 coveragas_rep <- foreach(i=reps2do, .combine="rbind") %do% {
-  # kiek procentu CG pagavom 
-  # koks vidutinis modifikavimas
-  #i <- "LINE"
   elementai <- tmp_annotations[mcols(tmp_annotations)$type == i] %>% reduce
   nCG <- countOverlaps(coverages_gr, elementai) %>% sum
  
@@ -762,177 +740,4 @@ p1 | p2
 
 ```{r, fig.width=12, fig.height=8}
 p3 | p4
-```
-
-Alternative variant where average from all elements (per stage) is used as a base and different from the base is calculated. Repeats and other elements analysed individually. 
-
-Skipping some old graphs as they failed with new genomic elements.
-```{r, eval=FALSE}
-col_fun = colorRamp2(c(-1, 0, 1),viridis(3))
-
-ha = HeatmapAnnotation(
-    sample = colnames(frakcijos_gen),
-    col = list(sample = cols_samples[-4],
-    annotation_legend_param = list(
-        annotation_name_gp = gpar(fontsize = 12),
-        annotation_labels_gp = gpar(fontsize = 12),
-        sample = list(nrow = 1, 
-                      direction = "horizontal"))
-              ),
-    show_legend = c(FALSE)     
-)
-
-
-ht1 <- frakcijos_gen[, ] %>% 
-  scale %>% 
-  Heatmap(., cluster_columns=FALSE,  
-             name = "standardized dif.",
-             col = col_fun, 
-             top_annotation = ha, 
-             heatmap_legend_param = list(
-               legend_direction = "horizontal", 
-               legend_width = unit(6, "cm")))
-
-
-ht2 <- frakcijos_rep[, ] %>% 
-  scale %>% 
-  Heatmap(., cluster_columns=FALSE,  
-             name = "standardized dif.",
-             col = col_fun, 
-             top_annotation = ha,               
-             heatmap_legend_param = list(
-               legend_direction = "horizontal", 
-               legend_width = unit(6, "cm")))
-
-grid.newpage()
-pushViewport(viewport(layout = grid.layout(nr = 1, nc = 2)))
-
-pushViewport(viewport(layout.pos.row = 1, layout.pos.col = 1))
-draw(ht1, heatmap_legend_side = "bottom", newpage = FALSE)
-upViewport()
-
-pushViewport(viewport(layout.pos.row = 1, layout.pos.col = 2))
-draw(ht2, heatmap_legend_side = "bottom", newpage = FALSE)
-upViewport()
-```
-
-
-Same for coverages:
-
-```{r, eval=FALSE}
-ht1 <- coveragas_gen[, ] %>% 
-  scale %>% 
-  Heatmap(., cluster_columns=FALSE,  
-             name = "standardized dif.",
-             col = col_fun, 
-             top_annotation = ha, 
-             heatmap_legend_param = list(
-               legend_direction = "horizontal", 
-               legend_width = unit(6, "cm")))
-
-
-ht2 <- coveragas_rep[, ] %>% 
-  scale %>% 
-  Heatmap(., cluster_columns=FALSE,  
-             name = "standardized dif.",
-             col = col_fun, 
-             top_annotation = ha, 
-             heatmap_legend_param = list(
-               legend_direction = "horizontal", 
-               legend_width = unit(6, "cm")))
-
-grid.newpage()
-pushViewport(viewport(layout = grid.layout(nr = 1, nc = 2)))
-
-pushViewport(viewport(layout.pos.row = 1, layout.pos.col = 1))
-draw(ht1, heatmap_legend_side = "bottom", newpage = FALSE)
-upViewport()
-
-pushViewport(viewport(layout.pos.row = 1, layout.pos.col = 2))
-draw(ht2, heatmap_legend_side = "bottom", newpage = FALSE)
-upViewport()
-```
-
-
-In these heatmaps normal scaling is used: each row is scaled individually. 
-
-
-```{r, eval=FALSE}
-ht1 <- frakcijos_gen[, ] %>% 
-  t() %>% 
-  scale %>% 
-  t() %>%  
-  Heatmap(., cluster_columns=FALSE,  
-             name = "standardized dif.",
-             col = col_fun, 
-             top_annotation = ha, 
-             heatmap_legend_param = list(
-               legend_direction = "horizontal", 
-               legend_width = unit(6, "cm")))
-
-
-ht2 <- frakcijos_rep[, ] %>% 
-  t() %>% 
-  scale %>%
-  t() %>%  
-  Heatmap(., cluster_columns=FALSE,  
-             name = "standardized dif.",
-             col = col_fun, 
-             top_annotation = ha, 
-             heatmap_legend_param = list(
-               legend_direction = "horizontal", 
-               legend_width = unit(6, "cm")))
-
-grid.newpage()
-pushViewport(viewport(layout = grid.layout(nr = 1, nc = 2)))
-
-pushViewport(viewport(layout.pos.row = 1, layout.pos.col = 1))
-draw(ht1, heatmap_legend_side = "bottom", newpage = FALSE)
-upViewport()
-
-pushViewport(viewport(layout.pos.row = 1, layout.pos.col = 2))
-draw(ht2, heatmap_legend_side = "bottom", newpage = FALSE)
-upViewport()
-
-```
-
-
-Same for coverages:
-
-```{r, eval=FALSE}
-ht1 <- coveragas_gen[, ] %>% 
-  t() %>% 
-  scale %>%
-  t() %>%  
-  Heatmap(., cluster_columns=FALSE,  
-             name = "standardized dif.",
-             col = col_fun, 
-             top_annotation = ha, 
-             heatmap_legend_param = list(
-               legend_direction = "horizontal", 
-               legend_width = unit(6, "cm")))
-
-
-ht2 <- coveragas_rep[, ] %>% 
-  t() %>% 
-  scale %>%
-  t() %>%  
-  Heatmap(., cluster_columns=FALSE,  
-             name = "standardized dif.",
-             col = col_fun, 
-             top_annotation = ha, 
-             heatmap_legend_param = list(
-               legend_direction = "horizontal", 
-               legend_width = unit(6, "cm")))
-
-grid.newpage()
-pushViewport(viewport(layout = grid.layout(nr = 1, nc = 2)))
-
-pushViewport(viewport(layout.pos.row = 1, layout.pos.col = 1))
-draw(ht1, heatmap_legend_side = "bottom", newpage = FALSE)
-upViewport()
-
-pushViewport(viewport(layout.pos.row = 1, layout.pos.col = 2))
-draw(ht2, heatmap_legend_side = "bottom", newpage = FALSE)
-upViewport()
 ```

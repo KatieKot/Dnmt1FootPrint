@@ -1,10 +1,8 @@
 ```{r}
 library(pacman)
-p_load(data.table, dplyr, ggplot2, ComplexHeatmap, gridSVG, circlize, viridis, RColorBrewer, GenomicRanges, #ggpubr,
+p_load(data.table, dplyr, ggplot2, ComplexHeatmap, gridSVG, circlize, viridis, RColorBrewer, GenomicRanges,
 EnrichedHeatmap, rtracklayer, ComplexHeatmap, patchwork, ggrepel, scales, stringr, foreach)
-#, splines, xlsx, ggh4x) 
 knitr::opts_chunk$set(dev='gridSVG', res=300, fig.height=4, fig.width=4, fig.align = "center")
-#knitr::opts_chunk$set(res=300, fig.height=4, fig.width=4, fig.align = "center")
 options(scipen=2)
 dir.create(outdatadir, recursive=TRUE)
 source("code/common.R")
@@ -47,7 +45,6 @@ p <- dt %>%
   .[, Elem := factor(Elem, levels=tvarka)] %>%
   ggplot(aes(Enri, Elem, fill=type)) +
     geom_jitter(shape=21, size=3, height = 0, width=0.0, seed = 1987) +
-    #geom_point(shape=21, size=3) +
     theme_Publication() +
     coord_cartesian(xlim=c(0, 2)) +
     ylab("Odds ration") +
@@ -104,8 +101,6 @@ dt %>%
           legend.box="vertical", 
           legend.margin=margin())
 ```
-
-
 
 ```{r, fig.height=7, fig.width=6}
 d1 <- readRDS(paste0("output/code/WGBS_RRBS/Enrichment/", "promoterEnri.RDS")) 

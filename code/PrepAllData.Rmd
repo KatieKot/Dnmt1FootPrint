@@ -26,7 +26,6 @@ path_repeats <- "UCSC_data/rmsk.txt.gz"
 path_blackList <- "mm10-blacklist.v2.bed"
 path_dCG <- "CG_data_onC.RDS"
 
-
 ```
 
 Data preparation. Intentionally left blank. 
@@ -42,7 +41,6 @@ if(!file.exists(paste0(outdatadir, "dAnnotations.RDS"))) {
   annotations <- build_annotations(genome = 'mm10', annotations = annots)
   annotations <- keepStandardChromosomes(annotations, pruning.mode="coarse", species="Mus musculus")
   ######
-  ## unmassked CGI  - there were some problems with rtracklayer. Got error failed to obtain hguid
   #CGI_unmaseked <- tmp[["anotacijos"]][mcols(tmp[["anotacijos"]])$type == "mm10_cpgUnmsk_UCSC"]
   #saveRDS(CGI_unmaseked, paste0(outdatadir, "CGI_unmasked_UCSC.RDS"))
   CpG_unmasked <- readRDS(paste0("input/", "CGI_unmasked_UCSC.RDS"))
@@ -495,7 +493,6 @@ samples2do <- samplesInfo$ID
 samples2do_m <- c("WT", "Het", "Hom")
 
 if(!file.exists(paste0(outdatadir, "mutantai_TopData.RDS"))) {
-  #if(!file.exists(paste0(outdatadir, "dCG.RDS"))) {
   dCG <- readRDS(path_dCG)
   dCG <- dCG[strand(dCG) == "+"]
   strand(dCG) <- "*"

@@ -216,7 +216,6 @@ rbind(d1[[1]], d2[[1]]) %>%
   melt() %>% 
   as.data.table() %>%
   .[, Var1 := gsub("mm10_", "", Var1)] %>% 
-  #.[, Var1 := gsub("_", "\n", Var1)] %>% 
   .[, Var1 := factor(Var1, levels=levels(d$Elem))] %>% 
   .[, Var2 := factor(Var2, levels=c("D8azide", "D4azide", "D2azide", "D0azide"))] %>% 
   ggplot(aes(Var1, value, fill=Var2)) +
@@ -238,7 +237,6 @@ rbind(d1[[2]], d2[[2]]) %>%
   melt() %>% 
   as.data.table() %>%
   .[, Var1 := gsub("mm10_", "", Var1)] %>% 
-  #.[, Var1 := gsub("_", "\n", Var1)] %>% 
   .[, Var1 := factor(Var1, levels=levels(d$Elem))] %>% 
   .[, Var2 := factor(Var2, levels=c("D8azide", "D4azide", "D2azide", "D0azide"))] %>% 
   ggplot(aes(Var1, value, fill=Var2)) +
@@ -430,11 +428,9 @@ p1 <- ggplot(d[[1]], aes(pos, meanas, fill=meginys)) +
   ylim(c(0, 125)) +
   theme(axis.ticks.x = element_blank(), 
           panel.border = element_blank(), 
-          #panel.grid.major = element_blank(),
           panel.grid.minor = element_blank(), 
           axis.line = element_line(colour = "black"),
           strip.text = element_text(colour = 'black'),
-          #strip.background =element_rect(fill=NA),
           strip.background = element_blank(),
           legend.position="bottom",
           axis.title.x = element_blank(),
@@ -444,7 +440,6 @@ p1 <- ggplot(d[[1]], aes(pos, meanas, fill=meginys)) +
           se=F,
           method="glm",
           formula=y~ns(x, 6),
-          #family=gaussian(link="log"),
           method.args = list(family = "gaussian"),
           show_guide = FALSE, 
           lwd=0.7) +     
@@ -461,11 +456,9 @@ p2 <- ggplot(d[[2]], aes(pos, meanas, fill=meginys)) +
   ylim(c(0, 25)) +
   theme(axis.ticks.x = element_blank(), 
           panel.border = element_blank(), 
-          #panel.grid.major = element_blank(),
           panel.grid.minor = element_blank(), 
           axis.line = element_line(colour = "black"),
           strip.text = element_text(colour = 'black'),
-          #strip.background =element_rect(fill=NA),
           strip.background = element_blank(),
           legend.position="bottom",
           axis.title.x = element_blank(),
@@ -475,7 +468,6 @@ p2 <- ggplot(d[[2]], aes(pos, meanas, fill=meginys)) +
           se=F,
           method="glm",
           formula=y~ns(x, 6),
-          #family=gaussian(link="log"),
           method.args = list(family = "gaussian"),
           show_guide = FALSE, 
           lwd=0.7) +     
@@ -560,8 +552,6 @@ p1 <- d[, ] %>%
   .[grepl("R", rn), ] %>% 
   .[!grepl("Ctr", rn), ] %>% 
   ggplot(aes(rn, value, fill=mutantas, label=paste0(round(value/1000000, 2), "M"))) +
-  #  geom_col(data=d[rn %in% samples, ], aes(mutantas, frac, fill=rn)) + 
-  #  geom_point() + 
     geom_col(colour="black") +
     geom_text_repel(point.size = NA) +   
     ylab("Identified CpG, M") +
@@ -600,8 +590,6 @@ p1 <- d[, ] %>%
   .[grepl("R", rn), ] %>% 
   .[!grepl("Ctr", rn), ] %>% 
   ggplot(aes(rn, frac, fill=mutantas, label=paste0(round(frac*100, 2), "%"))) +
-  #  geom_col(data=d[rn %in% samples, ], aes(mutantas, frac, fill=rn)) + 
-  #  geom_point() + 
     geom_col(colour="black") +
     geom_text_repel(point.size = NA) +   
     ylab("Identified CpG, M") +

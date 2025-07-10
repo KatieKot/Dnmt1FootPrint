@@ -299,8 +299,6 @@ make_scat_list <- function(duom) {
 }
 
 do_cor_elem <- function(data, elem, titlas, metodas="pearson") {
-  #data <- d_gr
-  #elem <- CGI
   dd <- data[countOverlaps(data, elem) > 0]    
   data.table(
     WGBS_homo=cor(dd$Hom[!(is.na(dd$Hom) | is.na(dd$WGBS_homo_met))], dd$WGBS_homo_met[!(is.na(dd$Hom) | is.na(dd$WGBS_homo_met))], method=metodas),

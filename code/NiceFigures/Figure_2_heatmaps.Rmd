@@ -3,7 +3,6 @@ library(pacman)
 p_load(data.table, dplyr, ggplot2, ComplexHeatmap, gridSVG, circlize, viridis, RColorBrewer, GenomicRanges, ggpubr,
 EnrichedHeatmap, rtracklayer, ComplexHeatmap, patchwork, ggrepel, scales, stringr, foreach, ggpmisc, ggrastr) 
 knitr::opts_chunk$set(dev='gridSVG', res=300, fig.height=4, fig.width=4, fig.align = "center")
-#knitr::opts_chunk$set(res=300, fig.height=5, fig.width=9)
 options(scipen=1)
 dir.create(outdatadir, recursive=TRUE)
 source("code/common.R")
@@ -115,7 +114,6 @@ make_dens <- function(x, y, xlab, ylab, titlas, adjustas, breakai, limitai) {
       theme_bw() +
       ylab(ylab) +
       xlab(xlab) +
-      #stat_cor(method="pearson", aes(label = paste(..r.label.., ..rr.label.., ..p.label.., sep = "~`,`~")),) +
       annotate(geom="text", x=0.35, y=90, label=paste0("R=",round(coru$estimate, 2), ", R2=", round(coru$estimate^2, 2), pval ), color="black") +
       ggtitle(titlas) +
       theme( 
@@ -127,7 +125,6 @@ make_dens <- function(x, y, xlab, ylab, titlas, adjustas, breakai, limitai) {
             plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm"), 
             legend.position="none",
             panel.background = element_rect(fill = "#4575b4", color = NA),  # Set the background color
-            #plot.background = element_rect(fill = "#4575b4", color = NA),
             panel.grid.major = element_blank(),
             panel.grid.minor = element_blank()
            )  
@@ -147,8 +144,6 @@ p + theme(legend.position="bottom", axis.text=element_text()) +
     xlab("topSeq") +
     ylab("WGBS/RRBS")
 ```
-
-
 
 ## WGBS, main
 

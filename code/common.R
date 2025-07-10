@@ -25,7 +25,6 @@ get_data <- function(samplas, wdir, outdatadir, dCG, ats=3) {
     rezu[["strandTable"]] <- mcols(reads[j])$bestCG %>% 
       as.data.table %>% 
       setnames(., c("ID")) %>% 
-      #.[, ID := gsub("_[+-]_[CG]+", "", ID)] %>% 
       .[, .N, by=ID] %>% 
       .[, chr := strsplit(ID, "_") %>% sapply(., `[`, 1)] %>% 
       .[, start := strsplit(ID, "_") %>% sapply(., `[`, 2)] %>% 
@@ -76,32 +75,22 @@ theme_Publication <- function(base_size=10, base_family="Arial") {
 
       (theme_foundation(base_size=base_size, base_family=base_family) + 
         theme(
-              #plot.title = element_text(face = "bold",
-              #                           size = rel(1.5), 
-              #                           hjust = 0.5),
+
                text = element_text(family = base_family, size = base_size, color = "black"),
 
                panel.background = element_rect(fill = "transparent", colour = NA),
-               #panel.border = element_rect(colour = "black"),
-               #panel.border = element_rect(colour = "black", fill=NA, size=1),
-               #panel.border = element_blank(),
 
                plot.background = element_rect(fill = "transparent", colour = NA),
                
                panel.grid.major = element_line(colour="#f0f0f0"),
                panel.grid.minor = element_blank(),
                
-               #axis.title.y = element_text(angle=90, vjust = 2),
-               #axis.title.x = element_text(vjust = -0.2),
                axis.line = element_line(colour=NA),
                axis.text = element_text(size=base_size, color="black"),
-               #axis.text.x =element_text(size = rel(1), angle = 90, vjust = 0.5, hjust=1),
-               #axis.text.y =element_text(size = rel(1)),
                axis.ticks = element_line(linewidth=0.3, color="black"),
                axis.title = element_text(size = rel(1.2), color="black"),
                
                strip.background=element_blank(),
-               #strip.text = element_text(face="bold"),
                strip.text.x = element_text(size=base_size, color="black"),
                strip.text.y = element_text(size=base_size, color="black", angle = 0),
                legend.position="bottom",  
@@ -115,15 +104,7 @@ theme_Publication <- function(base_size=10, base_family="Arial") {
               legend.text = element_text(size = base_size),
 
               plot.tag=element_text(size=14, face="bold")
-
-#               legend.key = element_rect(colour = NA),
-#               legend.position = "bottom",
-#               legend.direction = "horizontal",
-#               legend.key.size= unit(0.2, "cm"),
-#               legend.margin = margin(t = 0, unit = "cm"),
-#               legend.title = element_text(face="italic"),
-#               plot.margin=unit(c(5, 5, 5, 5),"mm")
-               
+     
           ))      
 }
 
@@ -178,8 +159,6 @@ plotPCA <- function(x, taitlas, samp2do) {
 }
 
 
-
-### Metilimo grupės 
 add_gr_1 <- function(x) {
   tmp <- x %>% 
     as.data.table() %>% 

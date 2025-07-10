@@ -255,10 +255,9 @@ p2 <- get_barplot_topSeq(makeGRangesFromDataFrame(data.frame(chr="chr15", start=
 
 ## TOP-seq data 
 
-Replication of Fig. 6A (). Dar daroma. 
+Replication of Fig. 6A (). 
 
 ```{r}
-## repeatų:
 get_per_Element <- function(elementas, TOP_data) {
   kiekis <- countOverlaps(elementas, TOP_data[mcols(TOP_data)$Het >= 0]) 
   s1 <- countOverlaps(elementas, TOP_data[mcols(TOP_data)$Het > 0])/kiekis 
@@ -483,7 +482,6 @@ tempR %>%
 
 ## ChIP-Seq II
 
-Principas kaip ir ChIP-seq, bet čia duomenys mano pačios sumappinti ir sunormalizuoti. 
 
 ```{r}
 dnmt3A <- import("input/OtherData/RAW_ChIP/SRR9074481.bw")
@@ -535,9 +533,7 @@ temp %>%
             panel.grid.major=element_blank(),
             panel.background=element_blank()
             ) +
-      #coord_cartesian(ylim=c(200, 800)) +
       scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
-#      scale_colour_manual(values = cols_samplesLong) +
       facet_grid(vars(sample), vars(element)) +
       geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
       geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
@@ -558,9 +554,7 @@ tempR %>%
             panel.grid.major=element_blank(),
             panel.background=element_blank()
             ) +
-   #   coord_cartesian(ylim=c(200, 800)) +
       scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
-#      scale_colour_manual(values = cols_samplesLong) +
       facet_grid(vars(sample), vars(element)) +
       geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
       geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 

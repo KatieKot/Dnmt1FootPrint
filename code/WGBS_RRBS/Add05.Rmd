@@ -1,15 +1,11 @@
 ```{r}
 library(pacman)
-#p_load(data.table, dplyr, ggplot2, rtracklayer, RColorBrewer, scales, foreach, GenomicRanges, clusterProfiler, doParallel, 
-#viridis, annotatr, stringr, GGally, EnrichedHeatmap, circlize, corrplot, patchwork, org.Mm.eg.db, ggvenn)
-
 p_load(data.table, dplyr, ggplot2, RColorBrewer, patchwork, scales, svglite, org.Mm.eg.db, GenomicRanges, foreach, clusterProfiler, ggthemes, rtracklayer, stringr)
 
 options(scipen=999)
 knitr::opts_chunk$set(fig.width=9, fig.height=7)
 dir.create(outdatadir, recursive=TRUE)
 source("./code/common.R")
-#registerDoParallel(6)
 ```
 
 # STUFF {.tabset}  
@@ -57,7 +53,7 @@ coverages2 <- copy(met_gr_mod)
 
 gff <- import("/mnt/store/annotations/MusMusculus_mm10_Ensembl/ENCODE/gencode.vM23.annotation.gtf")
 
-# darom nauja anotacija 
+
 
 tmp <- annotations[mcols(annotations)$type == "mm10_genes_3UTRs"]
 mcols(tmp)$type <- "3UTRs"
@@ -134,8 +130,6 @@ elements2do <- c("3UTRs", "5UTRs", "lncRNA_gencode", "exons", "introns", "promot
 
 
 do_enrichment <- function(featuras, samplas, annotation=annotations, covai=coverages)  {
-#  featuras <- "mm10_cpg_islands"
-#  samplas <- "Hom_R1"
   
   if(!(file.exists(paste0(outdatadir, "Enri_", featuras, "_", samplas, "_25.RDS")))) {
     anno <- annotation[annotation$type == featuras]
@@ -169,7 +163,6 @@ enri <- foreach(i=samples2do_BS, .combine="rbind") %dopar% {
 
 
 enri %>% 
-#  .[, Elem := factor(Elem, levels=tvarka)] %>%
   ggplot(aes(Elem, Enri, fill=type)) +
     geom_point(shape=21, size=2) +
     coord_flip() +
@@ -232,7 +225,6 @@ enri <- foreach(i=samples2do_BS, .combine="rbind") %dopar% {
 
 
 enri %>% 
-  #.[, Elem := factor(Elem, levels=tvarka)] %>%
   ggplot(aes(Elem, Enri, fill=type)) +
     geom_point(shape=21, size=2) +
     coord_flip() +
@@ -245,12 +237,6 @@ Tas pats, kas viršuje, bet sudėta kartu
 
 ```{r}
 d <- rbind(enri, enri_genomic)
-
-#tvarka <- d %>% .[type == "Hom", ] %>% setorder(., Enri) %>% .[, Elem]
-
-#temp <- d %>% 
-#  .[, Elem := factor(Elem, levels=tvarka)] 
-
 saveRDS(d, paste0(outdatadir, "Enrichment_CG_025.RDS"))
 
 ggplot(d, aes(Elem, Enri, fill=type)) +
@@ -296,7 +282,6 @@ saveRDS(ck, paste0(outdatadir, "promoterEnri_25.RDS")) } else {ck <- readRDS(pas
 dotplot(ck, show=50)
 ```
 
-
 ## CG level TOP 10
 
 
@@ -340,8 +325,6 @@ Mean per replicate plotted.
 coverages2 <- copy(met_gr_mod)
 
 gff <- import("/mnt/store/annotations/MusMusculus_mm10_Ensembl/ENCODE/gencode.vM23.annotation.gtf")
-
-# darom nauja anotacija 
 
 tmp <- annotations[mcols(annotations)$type == "mm10_genes_3UTRs"]
 mcols(tmp)$type <- "3UTRs"
@@ -418,9 +401,7 @@ elements2do <- c("3UTRs", "5UTRs", "lncRNA_gencode", "exons", "introns", "promot
 
 
 do_enrichment <- function(featuras, samplas, annotation=annotations, covai=coverages)  {
-#  featuras <- "mm10_cpg_islands"
-#  samplas <- "Hom_R1"
-  
+
   if(!(file.exists(paste0(outdatadir, "Enri_", featuras, "_", samplas, "_10.RDS")))) {
     anno <- annotation[annotation$type == featuras]
     covai <-  covai[!is.na(elementMetadata(covai)[, samplas]), ]
@@ -453,7 +434,6 @@ enri <- foreach(i=samples2do_BS, .combine="rbind") %dopar% {
 
 
 enri %>% 
-#  .[, Elem := factor(Elem, levels=tvarka)] %>%
   ggplot(aes(Elem, Enri, fill=type)) +
     geom_point(shape=21, size=2) +
     coord_flip() +
@@ -516,7 +496,6 @@ enri <- foreach(i=samples2do_BS, .combine="rbind") %dopar% {
 
 
 enri %>% 
-  #.[, Elem := factor(Elem, levels=tvarka)] %>%
   ggplot(aes(Elem, Enri, fill=type)) +
     geom_point(shape=21, size=2) +
     coord_flip() +
@@ -524,8 +503,6 @@ enri %>%
     scale_fill_manual(values=cols_samples) 
 
 ```
-
-Tas pats, kas viršuje, bet sudėta kartu
 
 ```{r}
 d <- rbind(enri, enri_genomic)

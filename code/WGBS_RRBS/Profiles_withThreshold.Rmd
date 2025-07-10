@@ -68,7 +68,6 @@ ext_target <- function(x){
 Replication of Fig. 6A (). 
 
 ```{r}
-## repeatų:
 get_per_Element <- function(elementas, TOP_data) {
   kiekis <- countOverlaps(elementas, TOP_data[mcols(TOP_data)$Het >= 0]) 
   s1 <- countOverlaps(elementas, TOP_data[mcols(TOP_data)$Het > 0])/kiekis 
@@ -165,7 +164,6 @@ get_profile_groups <- function(grupes, TOP_data, vardas, dnmt3A, dnmt3B) {
 }
 ```
 
-
 ```{r, fig.width=8, fig.height=12}
 dnmt3A <- import("input/OtherData/GSM3772691_mESC_Par_DNMT3A.bw")
 dnmt3B <- import("input/OtherData/GSM3772694_mESC_Par_DNMT3B.bw")
@@ -199,7 +197,6 @@ temp %>%
             ) +
       coord_cartesian(ylim=c(0, 100)) +
       scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
-#      scale_colour_manual(values = cols_samplesLong) +
       facet_grid(vars(element), vars(sample)) +
       geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
       geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
@@ -217,9 +214,7 @@ temp %>%
             panel.grid.major=element_blank(),
             panel.background=element_blank()
             ) +
-#      coord_cartesian(ylim=c(0, 10)) +
       scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
-#      scale_colour_manual(values = cols_samplesLong) +
       facet_grid(vars(element), vars(sample)) +
       geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
       geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
@@ -253,7 +248,6 @@ temp %>%
             ) +
       coord_cartesian(ylim=c(0, 100)) +
       scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
-#      scale_colour_manual(values = cols_samplesLong) +
       facet_grid(vars(element), vars(sample)) +
       geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
       geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
@@ -271,9 +265,7 @@ temp %>%
             panel.grid.major=element_blank(),
             panel.background=element_blank()
             ) +
-      #coord_cartesian(ylim=c(0, 10)) +
       scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
-#      scale_colour_manual(values = cols_samplesLong) +
       facet_grid(vars(element), vars(sample)) +
       geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
       geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
@@ -281,20 +273,9 @@ temp %>%
 
 ## Prasymas I 
 
-Atskiru prasymu paieskota, ar yra tokiu elementu, kur Dnmt-seq patenka į TOP grupę, o ChIP rodo apatinę grupę (ir atvirkščiai). 
-
-Daryta tik promotoriams ir CGI iš promotorių, nes sitie atrodo logiski iš biologinės pusės. 
-
-noDnmt_highChip - tie promotoriai, kur nėra (0) Dnmt-seq signalo ir daug ChIP.
-lowDnmt_highChip - tie promotoriai, kur priklauso mažiausiai signalo turinčiai Dnmt-seq grupei ir daug ChIP.
-highDnmt_lowChip - tie promotoriai, kur priklauso daugiausia signalo turinčiai Dnmt-seq grupei ir mažai ChIP.
-
-
 
 ```{r}
 get_per_Element_ChIP <- function(elementas, TOP_data) {
-  #elementas <- anotacijos[mcols(anotacijos)$type == "mm10_EPDpromoters", ]
-  #TOP_data <- dnmt3A
 
   fo <- findOverlaps(elementas, TOP_data)
   dcov <- cbind(mcols(elementas[queryHits(fo)])$gene_id, mcols(TOP_data[subjectHits(fo)])$score) %>% 
@@ -396,16 +377,10 @@ dotplot(ckA) + ggtitle("ChIP-seq DnmtA. CGI is promotoriu")
 dotplot(ckB) + ggtitle("ChIP-seq DnmtB. CGI is promotoriu")
 ```
 
-Random grafikai sutikrinimui, ar geros grupes. 
 
 ```{r}
-# Sutikrinam, ar ok. 
-
 
 get_mean_per_group <- function(x, covai, tipas) {
-  # x <-  grupes_Dnmtseq[[4]]
-  # covai <- coverages
- 
   fo <- findOverlaps(x, covai)
   data.table(ID=mcols(x[queryHits(fo)])$id, COV=mcols(covai[subjectHits(fo)])$Het) %>% 
     .[, lapply(.SD, mean), by="ID"] %>% 
@@ -423,9 +398,6 @@ rbind(
     theme_bw()  
 
 get_mean_per_group_chip <- function(x, covai, tipas) {
-  # x <-  grupes_Dnmtseq[[4]]
-  # covai <- coverages
- 
   fo <- findOverlaps(x, covai)
   data.table(ID=mcols(x[queryHits(fo)])$id, COV=mcols(covai[subjectHits(fo)])$score) %>% 
     .[, lapply(.SD, mean), by="ID"] %>% 
@@ -453,8 +425,4 @@ rbind(
     geom_boxplot(outlier.shape=NA) +
     coord_cartesian(ylim=c(0, 25)) +
     theme_bw()  
-
-
-
-
 ```

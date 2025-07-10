@@ -3,7 +3,6 @@ library(pacman)
 p_load(data.table, dplyr, ggplot2, ComplexHeatmap, gridSVG, circlize, viridis, RColorBrewer, GenomicRanges, ggpubr,
 EnrichedHeatmap, rtracklayer, ComplexHeatmap, patchwork, ggrepel, scales, stringr, foreach, splines, xlsx, ggh4x) 
 knitr::opts_chunk$set(dev='gridSVG', res=300, fig.height=4, fig.width=4, fig.align = "center")
-#knitr::opts_chunk$set(res=300, fig.height=4, fig.width=4, fig.align = "center")
 options(scipen=2)
 dir.create(outdatadir, recursive=TRUE)
 source("code/common.R")
@@ -28,8 +27,6 @@ d %>%
           legend.position="bottom")
 ```
 
-
-
 ```{r, fig.width=9}
 d <- readRDS("./output/code/WGBS_RRBS/TOP_Stat/data_TargetNo.RDS")
 nCG <- 21867550
@@ -41,8 +38,6 @@ d <- d %>%
 p1 <- d[!rn %in% samples, ] %>%  
   .[, rn := factor(rn, levels=c("WT_R1", "WT_R2", "WT_R3", "Het_R2", "Het_R3", "Het_R4", "Hom_R1", "Hom_R2", "Hom_R3"))] %>% 
   ggplot(aes(rn, value, fill=mutantas, label=paste0(round(value/1000000, 2), "M"))) +
-  #  geom_col(data=d[rn %in% samples, ], aes(mutantas, frac, fill=rn)) + 
-  #  geom_point() + 
     geom_col(colour="black") +
     geom_text_repel(point.size = NA) +   
     ylab("Identified CpG, M") +
@@ -67,7 +62,6 @@ p2 <- d %>%
 
 (p1 | p2) + plot_layout(guides = "collect") & theme(legend.position = 'bottom')
 ```
-
 
 ```{r, fig.width=5, fig.height=5}
 d <- readRDS("./output/code/WGBS_RRBS/TOP_Stat/data_heatmapCor.RDS")
@@ -129,9 +123,6 @@ ggplot(d, aes(element, meanas, fill=sample)) +
   theme_bw() +
   ylab("Pearson cor. mean") +
   scale_fill_manual(values=cols_samples, name="sample") +
-  #geom_errorbar(aes(ymin=meanas-sd/2, ymax=meanas+sd/2), width=.2,
-  #               position=position_dodge(.9), colour="black") +
-
   geom_errorbar(aes(ymin=meanas, ymax=meanas+sd/2), width=.2,
                  position=position_dodge(.9), colour="black") +
   coord_cartesian(ylim=c(0, 1)) +                 
@@ -171,7 +162,6 @@ d <- readRDS(paste0("output/code/WGBS_RRBS/Enrichment/", "Enrichment_CG.RDS"))
 
 p1 <- ggplot(d, aes(Enri, Elem, fill=type)) +
   geom_jitter(shape=21, size=3, height = 0, width=0.0, seed = 1987) +
-  #geom_point(shape=21, size=3) +
   theme_Publication() +
   coord_cartesian(xlim=c(0, 1.5)) +
   ylab("Odds ration") +
@@ -181,7 +171,6 @@ p1 <- ggplot(d, aes(Enri, Elem, fill=type)) +
 
 p2 <- ggplot(d, aes(Enri, Elem, fill=type)) +
   geom_jitter(shape=21, size=4, height = 0, width=0.0, seed = 1987) +
-  #geom_point(shape=21, size=3) +
   coord_cartesian(xlim=c(0, 1.5)) +
   theme_Publication() +
   ylab("Odds ration") +
@@ -249,9 +238,8 @@ atstumai %>%
     scale_colour_manual(values=cols_samples)
 ```
 
-
 ## Profiles I 
-    
+   
 
 ```{r, fig.width=7}
 get_barPlot_bisulfite <- function(pos2do, bisulfite, namas, toREM="", samples2do=bisulfite_samples) {
@@ -281,11 +269,9 @@ get_barPlot_bisulfite <- function(pos2do, bisulfite, namas, toREM="", samples2do
       facet_wrap(~meginys, ncol=1) +
       theme(axis.ticks.x = element_blank(), 
             panel.border = element_blank(), 
-            #panel.grid.major = element_blank(),
             panel.grid.minor = element_blank(), 
             axis.line = element_line(colour = "black"),
             strip.text = element_text(colour = 'black'),
-            #strip.background =element_rect(fill=NA),
             strip.background = element_blank(),
             legend.position="bottom",
             axis.title.x = element_blank(),
@@ -295,7 +281,6 @@ get_barPlot_bisulfite <- function(pos2do, bisulfite, namas, toREM="", samples2do
             se=F,
             method="glm",
             formula=y~ns(x, 8),
-            #family=gaussian(link="log"),
             method.args = list(family = "gaussian"),
             show_guide = FALSE, 
             lwd=0.7) +
@@ -333,11 +318,9 @@ get_barplot_topSeq <- function(pos2do, coverages_gr_rep, namas, toREM="") {
         facet_wrap(~meginys, ncol=1) +
         theme(axis.ticks.x = element_blank(), 
                 panel.border = element_blank(), 
-                #panel.grid.major = element_blank(),
                 panel.grid.minor = element_blank(), 
                 axis.line = element_line(colour = "black"),
                 strip.text = element_text(colour = 'black'),
-                #strip.background =element_rect(fill=NA),
                 strip.background = element_blank(),
                 legend.position="bottom",
                 axis.title.x = element_blank(),
@@ -347,7 +330,6 @@ get_barplot_topSeq <- function(pos2do, coverages_gr_rep, namas, toREM="") {
                 se=F,
                 method="glm",
                 formula=y~ns(x, 6),
-                #family=gaussian(link="log"),
                 method.args = list(family = "gaussian"),
                 show_guide = FALSE, 
                 lwd=0.7) +
@@ -627,11 +609,11 @@ RDS <- "CGI_heatmap"
             column_title = "Hom", use_raster=TRUE, top_annotation=TOP_right, show_heatmap_legend = FALSE)         
         
 
-draw(ht,                                 #/ plot the heatmap from above 
+draw(ht,                                 
      main="WGBS_hetero_met", 
-     heatmap_legend_side = "right",     #/ we want the legend below the heatmap
-     annotation_legend_side = "right",  #/ legend on the bottom side
-     padding = unit(c(4, 4, 4, 4), "mm") #/ some padding to avoid labels beyond plot borders
+     heatmap_legend_side = "right",     
+     annotation_legend_side = "right",  
+     padding = unit(c(4, 4, 4, 4), "mm") 
 )        
 ```
 
@@ -659,10 +641,7 @@ f1 <- temp %>%
             ) +
       coord_cartesian(ylim=c(200, 700)) +
       scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
-#      scale_colour_manual(values = cols_samplesLong) +
       facet_grid(vars(element), vars(sample)) +
-      #facet_grid2(vars(element), vars(sample), scales = "free", independent = "all") +
-      #facet_wrap(~element+sample, scales="free_y") +
       geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
       geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
 
@@ -681,10 +660,7 @@ f2 <- temp %>%
             ) +
       coord_cartesian(ylim=c(0, 100)) +
       scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
-#      scale_colour_manual(values = cols_samplesLong) +
       facet_grid(vars(element), vars(sample)) +
-      #facet_grid2(vars(element), vars(sample), scales = "free", independent = "all") +
-      #facet_wrap(~element+sample, scales="free_y") +
       geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
       geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
 
@@ -709,7 +685,6 @@ f1 <- temp %>%
             ) +
       coord_cartesian(ylim=c(200, 700)) +
       scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
-#      scale_colour_manual(values = cols_samplesLong) +
       facet_grid(vars(element), vars(sample)) +
       geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
       geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
@@ -727,15 +702,12 @@ f2 <- temp %>%
             panel.background=element_blank(),
             strip.text.y.right = element_text(angle = 0)
             ) +
-      #coord_cartesian(ylim=c(0, 100)) +
       scale_x_discrete(breaks = c("u100", "d1"), labels = c("FSS", "FES")) +
-#      scale_colour_manual(values = cols_samplesLong) +
       facet_grid(vars(element), vars(sample)) +
       geom_vline(xintercept=which(temp$V1 == 'u100'), linetype="dotted", colour="grey") +
       geom_vline(xintercept=which(temp$V1 == 'd1'), linetype="dotted", colour="grey") 
 f1 | f2
 ```
-
 
 ## Part III 
 
@@ -749,7 +721,6 @@ rbind(d1[[1]], d2[[1]]) %>%
   melt() %>% 
   as.data.table() %>%
   .[, Var1 := gsub("mm10_", "", Var1)] %>% 
-  #.[, Var1 := gsub("_", "\n", Var1)] %>% 
   .[, Var1 := factor(Var1, levels=levels(d$Elem))] %>% 
   ggplot(aes(Var1, value, fill=Var2)) +
     geom_col(position="dodge") +
@@ -770,7 +741,6 @@ rbind(d1[[2]], d2[[2]]) %>%
   melt() %>% 
   as.data.table() %>%
   .[, Var1 := gsub("mm10_", "", Var1)] %>% 
-  #.[, Var1 := gsub("_", "\n", Var1)] %>% 
   .[, Var1 := factor(Var1, levels=levels(d$Elem))] %>% 
   ggplot(aes(Var1, value, fill=Var2)) +
     geom_col(position="dodge") +
